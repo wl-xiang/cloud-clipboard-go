@@ -71,9 +71,7 @@ export const DISPLAY_TOGGLES = [
     { key: 'composerDevice', group: 'composer', labelKey: 'showComposerDevice', icon: 'mdi-laptop', modes: ONLY_DEFAULT },
     { key: 'composerSwap', group: 'composer', labelKey: 'showComposerSwap', icon: 'mdi-swap-vertical', modes: ONLY_DEFAULT },
     { key: 'composerPalette', group: 'composer', labelKey: 'traditionalColors', icon: 'mdi-palette-swatch', modes: ONLY_DEFAULT },
-    { key: 'composerShortcuts', group: 'composer', labelKey: 'shortcuts', icon: 'mdi-flash', modes: ONLY_DEFAULT },
     { key: 'composerTheme', group: 'composer', labelKey: 'toggleDarkMode', icon: 'mdi-theme-light-dark', modes: ONLY_DEFAULT },
-    { key: 'composerReward', group: 'composer', labelKey: 'reward', icon: 'mdi-currency-cny', modes: ONLY_DEFAULT },
     // 两个「整块关掉」的开关：文本输入框 / 上传文件。
     // 关掉整块是给「只想收、不想发」或「只用其中一种」的人用的 ——
     // 只关图标那排解决不了这个（图标底下还留着空输入框）。
@@ -143,9 +141,7 @@ export const DEFAULT_DISPLAY = {
     composerDevice: true,
     composerSwap: true,
     composerPalette: true,
-    composerShortcuts: true,
     composerTheme: true,
-    composerReward: true,
     // 默认开：跟上面那排图标同一条理由 —— 默认关等于「升级后功能消失」。
     composerText: true,
     composerUpload: true,

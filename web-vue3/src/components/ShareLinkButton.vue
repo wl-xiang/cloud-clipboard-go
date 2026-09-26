@@ -24,6 +24,7 @@
 import { computed, ref } from 'vue';
 import { useAppStore } from '@/store/app';
 import { useWebSocketStore } from '@/store/websocket';
+import { useTheme } from 'vuetify';
 import { useI18n } from 'vue-i18n';
 import { toast } from '@/plugins/toast';
 import QrcodeVue from 'qrcode.vue';
@@ -42,6 +43,9 @@ import {
     withCurrentOrigin,
     withShareQrFlag,
 } from '@/util.js';
+
+const theme = useTheme();
+const isDark = computed(() => theme.current.value?.dark ?? false);
 
 const mdiContentCopy = 'mdi-content-copy';
 const mdiShareVariant = 'mdi-share-variant';
@@ -204,6 +208,8 @@ async function copyToClipboard(textToCopy, successMessageKey = 'copySuccess', er
                 density="compact"
                 variant="text"
                 color="grey"
+                class="share-link-button__card-icon"
+                :class="{ 'share-link-button__card-icon--dark': isDark }"
                 @click.stop="openShareDialog"
             >
                 <v-icon>{{ mdiShareVariant }}</v-icon>
@@ -404,5 +410,21 @@ async function copyToClipboard(textToCopy, successMessageKey = 'copySuccess', er
 
 .share-ttl-chip {
     cursor: pointer;
+}
+
+/* ── 卡片图标形态的底色 ─────────────────────────────────────────────
+   与消息卡片上另外两个按钮（复制 / 删除）完全一致 —— 它们三个并排，
+   只有这个没底色的话一眼就看出来了（用户报的就是这个）。
+   ⚠️ 这条样式必须**住在本组件里**：调用点传进来的 class（timeline-card__icon-button）
+   会落到这个按钮上，但那条规则是卡片组件的 scoped 样式、选择器带着卡片自己的
+   data-v —— 而这个按钮是在本组件里渲染的、不带那个属性，永远匹配不上。 */
+.share-link-button__card-icon {
+    background: rgba(248, 250, 252, 0.92);
+    margin-left: 0.125rem;
+    flex: 0 0 auto;
+}
+
+.share-link-button__card-icon--dark {
+    background: rgba(30, 41, 59, 0.92);
 }
 </style>

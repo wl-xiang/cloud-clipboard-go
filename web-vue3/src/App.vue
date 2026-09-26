@@ -16,9 +16,10 @@ import { errorMessage } from '@/util.js';
 import { buildId } from '@/sw-update.js';
 import { MODES } from '@/views/modes/registry.js';
 import { DISPLAY_GROUPS, togglesForMode } from '@/data/displayToggles.js';
+import { LAYOUT_OPTIONS, VIEW_OPTIONS } from '@/data/workspace.js';
 
 const mdiBrightness4 = 'mdi-brightness-4';
-const mdiChevronLeft = 'mdi-chevron-left';
+const mdiLoginVariant = 'mdi-login-variant';
 const mdiChevronRight = 'mdi-chevron-right';
 const mdiDockLeft = 'mdi-dock-left';
 const mdiDockRight = 'mdi-dock-right';
@@ -26,15 +27,11 @@ const mdiClose = 'mdi-close';
 const mdiContentPaste = 'mdi-content-paste';
 const mdiDiceMultiple = 'mdi-dice-multiple';
 const mdiGithub = 'mdi-github';
-const mdiHeartOutline = 'mdi-heart-outline';
 const mdiOpenInNew = 'mdi-open-in-new';
 const mdiPalette = 'mdi-palette';
 const mdiPaletteSwatch = 'mdi-palette-swatch';
 const mdiShareVariant = 'mdi-share-variant';
-const mdiCurrencyCny = 'mdi-currency-cny';
-const mdiCoffee = 'mdi-coffee';
 const mdiTranslate = 'mdi-translate';
-const mdiViewList = 'mdi-view-list';
 
 const app = useAppStore();
 const ws = useWebSocketStore();
@@ -112,9 +109,8 @@ const currentPrimary = computed(() => isDark.value ? theme.themes.value.dark.col
 const clearAllDialog = ref(false);
 const clipboardClearedMessageVisible = ref(false);
 const roomSheet = ref(false);
-const donateDialog = ref(false);
 const roomSearch = ref('');
-const roomDockVisible = ref(true);
+const roomDockVisible = ref(false);
 const roomDockSide = ref('right');
 const availableRooms = ref([]);
 const roomsLoading = ref(false);
@@ -247,6 +243,33 @@ const roomGroups = computed(() => [
     },
 ].filter(group => group.rooms.length > 0));
 
+// 平台闸门：服务端要密码 且 这次请求没通过 → 锁住整个界面。
+// ⚠️ 判定用的是 /server 下发的 globalAuth，**不是** `auth` ——
+//    `auth` 里还含「某个房间有密码」，用它当闸门会把整个站点锁住，
+//    连进一个开放房间都做不到（房间密码是另一套流程，见房间对话框）。
+const platformLocked = computed(() => app.globalAuth === true && app.authorized !== true);
+
+// 网络暂时打不通（/server 都没拉到时），不能把人锁在外面 —— 那时 authorized 还是初值 true，
+// 闸门自然不显示；这里只负责把「填错密码」翻译成给人看的话。
+const platformError = computed(() => (ws.authCodeError ? t(ws.authCodeError) : ''));
+
+const platformPassword = ref('');
+const platformSubmitting = ref(false);
+async function submitPlatformPassword() {
+    if (platformSubmitting.value || !platformPassword.value.trim()) {
+        return;
+    }
+    platformSubmitting.value = true;
+    try {
+        const ok = await ws.submitPlatformPassword(platformPassword.value);
+        if (ok) {
+            platformPassword.value = '';
+        }
+    } finally {
+        platformSubmitting.value = false;
+    }
+}
+
 const darkModeOptions = [
     { value: 'time', title: t('switchByTime'), desc: t('switchByTimeDesc') },
     { value: 'prefer', title: t('switchBySystem'), desc: t('switchBySystemDesc') },
@@ -336,7 +359,7 @@ function persistRoomBrowserPreferences() {
 function restoreRoomBrowserPreferences() {
     const storedVisible = localStorage.getItem('roomDockVisible');
     const storedSide = localStorage.getItem('roomDockSide');
-    roomDockVisible.value = storedVisible === null ? true : storedVisible === 'true';
+    roomDockVisible.value = storedVisible === null ? false : storedVisible === 'true';
     roomDockSide.value = storedSide === 'left' ? 'left' : 'right';
 }
 async function clearAll() {
@@ -447,6 +470,148 @@ async function switchRoom(roomName) {
     roomSheet.value = false;
     await ws.navigateToRoom(roomName);
 }
+
+// ── 房间管理（新建 / 删除 / 清理）──────────────────────────────────────
+//
+// 权限模型**只在服务端**（见 lib/handler_rooms.go 的文件头）：
+//   公共房间不可删、只能删自建房间、删要持有该房间密码或平台管理员凭据。
+// 前端这里只负责收集输入与展示结果 —— 不要在这里复刻那套判断，
+// 两处规则迟早会漂，而漂掉的那一侧一定是没有测试兜着的前端。
+const roomCreateDialog = ref(false);
+const roomCreateForm = ref({ name: '', password: '', confirm: '' });
+const roomCreateError = ref('');
+const roomCreateLoading = ref(false);
+
+const roomDeleteTarget = ref(null);
+const roomDeletePassword = ref('');
+const roomDeleteError = ref('');
+const roomDeleteLoading = ref(false);
+const roomCleanupLoading = ref(false);
+const roomCleanupDialog = ref(false);
+const roomCleanupError = ref('');
+
+// 房间管理密码：新建 / 删除 / 清理都要出示（服务端逐次校验，前端不缓存明文）。
+const roomManagePassword = ref('');
+
+// 「我算不算管理员」在前端只能粗略推断：手上有平台令牌就是。
+// 服务端才是权威（每个管理接口都会重判一次），这里只用来决定
+// 「清理无用房间」这个按钮要不要显示。
+const isPlatformAdmin = computed(() => !app.globalAuth || Boolean(ws.getGlobalAuthToken && ws.getGlobalAuthToken()));
+
+// 「按名称进入」：侧栏动作行与工具栏那个门图标都走这里。
+// 侧栏还开着时要顺手收起它 —— 否则弹窗会被侧栏压住（移动端是 bottom sheet，直接叠在一起）。
+function openRoomEnter() {
+    roomSheet.value = false;
+    ws.roomInput = ws.room;
+    ws.roomDialog = true;
+}
+
+function openRoomCreate() {
+    roomCreateForm.value = { name: '', password: '', confirm: '' };
+    roomManagePassword.value = '';
+    roomCreateError.value = '';
+    roomCreateDialog.value = true;
+}
+
+async function submitRoomCreate() {
+    if (roomCreateLoading.value) {
+        return;
+    }
+    const name = String(roomCreateForm.value.name || '').trim();
+    const password = String(roomCreateForm.value.password || '');
+    if (!name) {
+        roomCreateError.value = t('roomNameRequired');
+        return;
+    }
+    if (!password) {
+        roomCreateError.value = t('roomPasswordRequired');
+        return;
+    }
+    if (password !== String(roomCreateForm.value.confirm || '')) {
+        roomCreateError.value = t('roomPasswordMismatch');
+        return;
+    }
+    roomCreateLoading.value = true;
+    roomCreateError.value = '';
+    try {
+        await axios.post('rooms', { name, password }, {
+            headers: { 'X-Room-Manage-Password': String(roomManagePassword.value || '') },
+        });
+        roomCreateDialog.value = false;
+        toast(t('roomCreateSuccess', { name }));
+        await fetchRoomList();
+    } catch (error) {
+        roomCreateError.value = errorMessage(error) || t('roomCreateFailed');
+    } finally {
+        roomCreateLoading.value = false;
+    }
+}
+
+function openRoomDelete(room) {
+    roomDeleteTarget.value = room;
+    roomDeletePassword.value = '';
+    roomManagePassword.value = '';
+    roomDeleteError.value = '';
+}
+
+async function submitRoomDelete() {
+    const room = roomDeleteTarget.value;
+    if (!room || roomDeleteLoading.value) {
+        return;
+    }
+    roomDeleteLoading.value = true;
+    roomDeleteError.value = '';
+    try {
+        // 凭据走 X-Room-Auth-Tokens（不是 Authorization）：axios 拦截器已经往
+        // Authorization 里塞了当前的身份，那个不能被覆盖 —— 覆盖了管理员就变成
+        // 「必须手打密码才能删」。两个候选都带上，服务端逐个试（extractAuthTokens）。
+        const typed = String(roomDeletePassword.value || '').trim();
+        const manage = String(roomManagePassword.value || '').trim();
+        await axios.delete(`rooms/${encodeURIComponent(room.name)}`, {
+            params: manage ? { managePassword: manage } : undefined,
+            headers: typed ? { 'X-Room-Auth-Tokens': JSON.stringify([typed]) } : undefined,
+        });
+        roomDeleteTarget.value = null;
+        roomDeletePassword.value = '';
+        toast(t('roomDeleteSuccess', { name: displayRoomName(room.name) }));
+        await fetchRoomList();
+    } catch (error) {
+        roomDeleteError.value = errorMessage(error) || t('roomDeleteFailed');
+    } finally {
+        roomDeleteLoading.value = false;
+    }
+}
+
+function openRoomCleanup() {
+    roomManagePassword.value = '';
+    roomCleanupError.value = '';
+    roomCleanupDialog.value = true;
+}
+
+async function submitRoomCleanup() {
+    if (roomCleanupLoading.value) {
+        return;
+    }
+    roomCleanupLoading.value = true;
+    roomCleanupError.value = '';
+    try {
+        const response = await axios.post('rooms/cleanup', null, {
+            headers: { 'X-Room-Manage-Password': String(roomManagePassword.value || '') },
+        });
+        roomCleanupDialog.value = false;
+        const removed = Array.isArray(response.data?.removed) ? response.data.removed : [];
+        toast(removed.length ? t('roomCleanupDone', { count: removed.length }) : t('roomCleanupNothing'));
+        await fetchRoomList();
+    } catch (error) {
+        roomCleanupError.value = errorMessage(error) || t('roomCleanupFailed');
+    } finally {
+        roomCleanupLoading.value = false;
+    }
+}
+
+function displayRoomName(name) {
+    return name ? name : t('publicRoom');
+}
 function getFavoriteRooms() {
     try {
         return JSON.parse(localStorage.getItem('favoriteRooms') || '[]');
@@ -498,8 +663,10 @@ watch(() => theme.themes.value.light.colors.primary, (newVal) => {
     localStorage.setItem('lightPrimary', newVal);
 });
 const useDark = computed(() => app.useDark);
-watch(useDark, (value) => {
-    theme.change(value ? 'dark' : 'light');
+// 统一的入口：**只走 applyDarkMode**，别再各写一遍 theme.change ——
+// 落掉 documentElement 那一半，深色模式下页面底色就不会跟着变。
+watch(useDark, () => {
+    applyDarkMode();
 });
 watch(() => app.dark, (newVal) => {
     localStorage.setItem('darkmode', newVal);
@@ -509,7 +676,14 @@ watch(() => app.dark, (newVal) => {
 let darkModeTimer = null;
 let darkMediaQuery = null;
 function applyDarkMode() {
-    theme.change(app.useDark ? 'dark' : 'light');
+    const dark = Boolean(app.useDark);
+    theme.change(dark ? 'dark' : 'light');
+    // ⚠️ 主题类必须**同时**挂在 <html> 上。
+    //   Vuetify 的 `.v-theme--dark` 只加在 #app 里层的 .v-application 上，
+    //   而页面底色（html / body）在它**外面** —— 深色令牌只声明在 .v-theme--dark 里的话，
+    //   html / body 永远解析到浅色值，表现就是「面板是深色、页面底色还是浅色」。
+    //   theme.css 里深色令牌写成 `html.cc-dark, .v-theme--dark`，两边都认。
+    document.documentElement.classList.toggle('cc-dark', dark);
 }
 function setupDarkModeTimers() {
     if (darkModeTimer) {
@@ -570,6 +744,46 @@ watch(() => route.fullPath, () => {
             <router-view />
         </template>
 
+        <!-- 平台闸门：没通过密码之前**不渲染主界面**。
+             只用一层遮罩盖住是不够的 —— DOM 里仍然能读到内容、也仍会去连 WebSocket。 -->
+        <div v-if="platformLocked" class="auth-gate">
+            <div class="auth-gate__card">
+                <div class="auth-gate__icon">
+                    <v-icon size="34">mdi-lock-outline</v-icon>
+                </div>
+                <h1 class="auth-gate__title">{{ t('platformLockedTitle') }}</h1>
+                <p class="auth-gate__desc">{{ t('platformLockedDesc') }}</p>
+                <v-text-field
+                    v-model="platformPassword"
+                    :label="t('password')"
+                    type="password"
+                    variant="outlined"
+                    autocomplete="current-password"
+                    class="auth-gate__field"
+                    :error-messages="platformError ? [platformError] : []"
+                    :loading="platformSubmitting"
+                    :disabled="platformSubmitting"
+                    autofocus
+                    @update:model-value="ws.authCodeError = ''"
+                    @keyup.enter="submitPlatformPassword"
+                ></v-text-field>
+                <v-btn
+                    block
+                    rounded="pill"
+                    size="large"
+                    color="primary"
+                    variant="flat"
+                    class="auth-gate__submit"
+                    :loading="platformSubmitting"
+                    :disabled="!platformPassword.trim()"
+                    @click="submitPlatformPassword"
+                >
+                    <v-icon start>{{ mdiLoginVariant }}</v-icon>
+                    {{ t('platformUnlock') }}
+                </v-btn>
+            </div>
+        </div>
+
         <template v-else>
         <v-alert
             v-model="clipboardClearedMessageVisible"
@@ -617,8 +831,13 @@ watch(() => route.fullPath, () => {
                         :active-count="activeRoomCount"
                         :loading="roomsLoading"
                         :has-rooms="filteredRooms.length > 0"
+                        :can-cleanup="isPlatformAdmin"
                         @select="switchRoom"
                         @favorite="toggleFavoriteRoom"
+                        @create="openRoomCreate"
+                        @delete="openRoomDelete"
+                        @cleanup="openRoomCleanup"
+                        @enter="openRoomEnter"
                         variant="dock"
                         :dock-side="roomDockSide"
                     >
@@ -770,27 +989,62 @@ watch(() => route.fullPath, () => {
                                     </v-list-item-title>
                                 </v-list-item>
                             </v-list>
-                            <v-divider class="my-2"></v-divider>
-                            <v-btn block color="error" variant="outlined" size="small"
-                                   class="cc-settings__donate-btn"
-                                   @click="donateDialog = true">
-                                <template v-slot:prepend>
-                                    <v-icon>{{ mdiHeartOutline }}</v-icon>
-                                </template>
-                                {{ t('donatePrompt') }}
-                                <template v-slot:append>
-                                    <v-icon size="16">{{ mdiChevronRight }}</v-icon>
-                                </template>
-                            </v-btn>
                         </div>
                         </v-card-text>
                     </v-tabs-window-item>
                     <v-tabs-window-item value="personalization">
                         <v-card-text class="cc-settings__body" style="max-height: 62vh; overflow-y: auto;">
                             <div class="text-caption text-medium-emphasis mb-3">{{ t('personalizationHint') }}</div>
-                                                    <!-- 即将下架的模式（registry 的 deprecated）**仍然完全可用**，只是弱化显示。
-                                                         这里**不加分割线** —— 这是个横向 flex-wrap 的按钮组，塞一条分隔线比不塞更乱；
-                                                         改用 title 说明，鼠标停一下就知道「即将下架」。 -->
+
+                                                    <!-- 布局 / 展示方式：**只对标准模式有意义**（另外五个模式各有一套自己的排布）。
+                                                         所以只在 uiMode === 'default' 时出现 —— 按 displayToggles 的同一原则：
+                                                         显示一个拨了不生效的开关，比不显示它更糟。 -->
+                                                    <template v-if="app.uiMode === 'default'">
+                                                        <v-list-subheader class="cc-settings__subheader">{{ t('workspaceLayout') }}</v-list-subheader>
+                                                        <v-btn-toggle
+                                                            :model-value="app.homeLayout"
+                                                            @update:model-value="(value) => value && app.setHomeLayout(value)"
+                                                            mandatory
+                                                            density="comfortable"
+                                                            variant="outlined"
+                                                            divided
+                                                            class="flex-wrap mb-3 cc-workspace-toggle"
+                                                        >
+                                                            <v-btn
+                                                                v-for="option in LAYOUT_OPTIONS"
+                                                                :key="option.key"
+                                                                :value="option.key"
+                                                                size="small"
+                                                                class="text-none"
+                                                            >
+                                                                <v-icon start size="18">{{ option.icon }}</v-icon>{{ t(option.labelKey) }}
+                                                            </v-btn>
+                                                        </v-btn-toggle>
+
+                                                        <v-list-subheader class="cc-settings__subheader">{{ t('workspaceViewMode') }}</v-list-subheader>
+                                                        <v-btn-toggle
+                                                            :model-value="app.historyView"
+                                                            @update:model-value="(value) => value && app.setHistoryView(value)"
+                                                            mandatory
+                                                            density="comfortable"
+                                                            variant="outlined"
+                                                            divided
+                                                            class="flex-wrap mb-3 cc-workspace-toggle"
+                                                        >
+                                                            <v-btn
+                                                                v-for="option in VIEW_OPTIONS"
+                                                                :key="option.key"
+                                                                :value="option.key"
+                                                                size="small"
+                                                                class="text-none"
+                                                            >
+                                                                <v-icon start size="18">{{ option.icon }}</v-icon>{{ t(option.labelKey) }}
+                                                            </v-btn>
+                                                        </v-btn-toggle>
+                                                        <div class="text-caption text-medium-emphasis mb-3">{{ t('workspaceHint') }}</div>
+                                                    </template>
+                                                    <!-- 界面模式。巨型与终端已删除，「即将下架」的弱化显示也随之取消 ——
+                                                         剩下的模式一律常驻，不再有主次之分。 -->
                                                     <v-btn-toggle
                                                         :model-value="app.uiMode"
                                                         @update:model-value="app.setUiMode"
@@ -805,8 +1059,6 @@ watch(() => route.fullPath, () => {
                                                             :value="mode.key"
                                                             size="small"
                                                             class="text-none"
-                                                            :style="{ opacity: mode.deprecated ? 0.62 : 1 }"
-                                                            :title="mode.deprecated ? t('uiModeDeprecated') : undefined"
                                                         >
                                                             <v-icon start size="18">{{ mode.icon }}</v-icon>{{ t(mode.labelKey) }}
                                                         </v-btn>
@@ -905,60 +1157,6 @@ watch(() => route.fullPath, () => {
             </v-card>
         </v-dialog>
 
-        <v-dialog v-model="donateDialog" max-width="420">
-            <v-card>
-                <v-card-title class="text-h6 d-flex align-center">
-                    <v-icon color="error" class="mr-2">{{ mdiHeartOutline }}</v-icon>
-                    {{ t('donatePrompt') }}
-                </v-card-title>
-                <v-divider></v-divider>
-                <v-card-text class="text-center pa-4">
-                    <div class="text-body-2 font-weight-medium cc-settings__link-title mb-2">{{ t('supportSectionTitle') }}</div>
-                    <v-row class="cc-settings__reward-row" dense>
-                        <v-col class="text-center">
-                            <div class="cc-settings__reward-label">微信</div>
-                            <img src="/reward-wechat.png" alt="WeChat Reward QR" class="cc-settings__reward-qr" />
-                        </v-col>
-                        <v-col class="text-center">
-                            <div class="cc-settings__reward-label">支付宝</div>
-                            <img src="/reward-alipay.png" alt="Alipay Reward QR" class="cc-settings__reward-qr" />
-                        </v-col>
-                    </v-row>
-                    <div class="text-body-2 text-medium-emphasis mt-3 cc-settings__warm-text">{{ t('rewardHint') }}</div>
-                    <v-btn class="mt-3" color="#ff5f5f" variant="tonal" block
-                           href="https://ko-fi.com/jonnyan404"
-                           target="_blank" rel="noopener">
-                        <v-icon start>{{ mdiCoffee }}</v-icon>
-                        <span>Buy Me a Coffee</span>
-                        <v-icon end size="16">{{ mdiOpenInNew }}</v-icon>
-                    </v-btn>
-                    <v-divider class="my-4"></v-divider>
-                    <div class="cc-settings__warm-box">
-                        <div class="text-body-2 text-medium-emphasis cc-settings__warm-text">{{ t('cloudPromoHint') }}</div>
-                        <div class="d-flex flex-column ga-2 mt-3">
-                        <v-btn variant="outlined" color="primary"
-                               href="https://cloud.tencent.com/act/cps/redirect?redirect=6150&cps_key=0b1dfaf9bb573dac05abef76202dc8cc&from=console"
-                               target="_blank" rel="noopener" block>
-                            <v-icon start>{{ mdiCurrencyCny }}</v-icon>
-                            腾讯云 2C2G ¥99/年
-                            <v-icon end size="16">{{ mdiOpenInNew }}</v-icon>
-                        </v-btn>
-                        <v-btn variant="outlined" color="primary"
-                               href="https://www.aliyun.com/daily-act/ecs/activity_selection?userCode=79h2wrag"
-                               target="_blank" rel="noopener" block>
-                            <v-icon start>{{ mdiCurrencyCny }}</v-icon>
-                            阿里云 2C2G ¥99/年
-                            <v-icon end size="16">{{ mdiOpenInNew }}</v-icon>
-                        </v-btn>
-                        </div>
-                    </div>
-                </v-card-text>
-                <v-card-actions>
-                    <v-spacer></v-spacer>
-                    <v-btn color="primary" variant="text" @click="donateDialog = false">{{ t('close') }}</v-btn>
-                </v-card-actions>
-            </v-card>
-        </v-dialog>
 
         <!-- 分享记录（从设置 → 分享记录 打开）。与设置弹窗并列，都是顶层 teleport 弹窗。 -->
         <share-history-dialog v-model="shareHistoryDialog"></share-history-dialog>
@@ -995,7 +1193,7 @@ watch(() => route.fullPath, () => {
                         class="cc-dialog-field"
                         :loading="ws.authDialogLoading"
                         :disabled="ws.authDialogLoading"
-                        :error-messages="ws.authCodeError ? [ws.authCodeError] : []"
+                        :error-messages="ws.authCodeError ? [t(ws.authCodeError)] : []"
                         hide-details="auto"
                         @update:model-value="ws.authCodeError = ''"
                         @keyup.enter="ws.submitAuthCodeForPendingRoom()"
@@ -1010,6 +1208,177 @@ watch(() => route.fullPath, () => {
                         :loading="ws.authDialogLoading"
                         @click="ws.submitAuthCodeForPendingRoom()"
                     >{{ t('submit') }}</v-btn>
+                </v-card-actions>
+            </v-card>
+        </v-dialog>
+
+        <!-- 新建房间。密码是必填的 —— 需求就是「房间准入都要有密码」，
+             所以这里不给「先建后补」的口子。 -->
+        <v-dialog v-model="roomCreateDialog" max-width="380">
+            <v-card>
+                <v-card-title class="text-h6 d-flex align-center">
+                    <v-icon class="mr-2">mdi-plus</v-icon>
+                    {{ t('createRoom') }}
+                    <v-spacer></v-spacer>
+                    <v-btn icon density="comfortable" variant="text" size="small" @click="roomCreateDialog = false">
+                        <v-icon>{{ mdiClose }}</v-icon>
+                    </v-btn>
+                </v-card-title>
+                <v-divider></v-divider>
+                <v-card-text>
+                    <p class="text-body-2 text-medium-emphasis mb-3">{{ t('createRoomHint') }}</p>
+                    <v-text-field
+                        v-model="roomCreateForm.name"
+                        :label="t('roomName')"
+                        variant="outlined"
+                        density="comfortable"
+                        :counter="32"
+                        maxlength="32"
+                        autofocus
+                        @update:model-value="roomCreateError = ''"
+                    ></v-text-field>
+                    <v-text-field
+                        v-model="roomCreateForm.password"
+                        :label="t('roomPassword')"
+                        type="password"
+                        autocomplete="new-password"
+                        variant="outlined"
+                        density="comfortable"
+                        @update:model-value="roomCreateError = ''"
+                    ></v-text-field>
+                    <v-text-field
+                        v-model="roomCreateForm.confirm"
+                        :label="t('roomPasswordConfirm')"
+                        type="password"
+                        autocomplete="new-password"
+                        variant="outlined"
+                        density="comfortable"
+                        @update:model-value="roomCreateError = ''"
+                    ></v-text-field>
+                    <v-text-field
+                        v-model="roomManagePassword"
+                        :label="t('roomManagePasswordLabel')"
+                        type="password"
+                        autocomplete="off"
+                        variant="outlined"
+                        density="comfortable"
+                        hide-details="auto"
+                        :hint="t('roomManagePasswordHint')"
+                        persistent-hint
+                        :error-messages="roomCreateError ? [roomCreateError] : []"
+                        @keyup.enter="submitRoomCreate"
+                        @update:model-value="roomCreateError = ''"
+                    ></v-text-field>
+                </v-card-text>
+                <v-card-actions>
+                    <v-spacer></v-spacer>
+                    <v-btn variant="text" @click="roomCreateDialog = false">{{ t('cancel') }}</v-btn>
+                    <v-btn
+                        rounded="pill"
+                        color="primary"
+                        variant="flat"
+                        :loading="roomCreateLoading"
+                        @click="submitRoomCreate"
+                    >{{ t('create') }}</v-btn>
+                </v-card-actions>
+            </v-card>
+        </v-dialog>
+
+        <!-- 删除房间。密码与「管理员身份」二者其一即可 ——
+             管理员留空直接删，普通用户填该房间的密码。 -->
+        <!-- 清理无用房间：需要房间管理密码。 -->
+        <v-dialog v-model="roomCleanupDialog" max-width="380">
+            <v-card>
+                <v-card-title class="text-h6 d-flex align-center">
+                    <v-icon class="mr-2">mdi-broom</v-icon>
+                    {{ t('cleanupRooms') }}
+                    <v-spacer></v-spacer>
+                    <v-btn icon density="comfortable" variant="text" size="small" @click="roomCleanupDialog = false">
+                        <v-icon>{{ mdiClose }}</v-icon>
+                    </v-btn>
+                </v-card-title>
+                <v-divider></v-divider>
+                <v-card-text>
+                    <p class="text-body-2 text-medium-emphasis mb-3">{{ t('cleanupRoomsHint') }}</p>
+                    <v-text-field
+                        v-model="roomManagePassword"
+                        :label="t('roomManagePasswordLabel')"
+                        type="password"
+                        autocomplete="off"
+                        variant="outlined"
+                        density="comfortable"
+                        hide-details="auto"
+                        :error-messages="roomCleanupError ? [roomCleanupError] : []"
+                        @keyup.enter="submitRoomCleanup"
+                        @update:model-value="roomCleanupError = ''"
+                    ></v-text-field>
+                </v-card-text>
+                <v-card-actions>
+                    <v-spacer></v-spacer>
+                    <v-btn variant="text" @click="roomCleanupDialog = false">{{ t('cancel') }}</v-btn>
+                    <v-btn
+                        rounded="pill"
+                        color="primary"
+                        variant="flat"
+                        :loading="roomCleanupLoading"
+                        @click="submitRoomCleanup"
+                    >{{ t('cleanupRooms') }}</v-btn>
+                </v-card-actions>
+            </v-card>
+        </v-dialog>
+
+        <v-dialog :model-value="Boolean(roomDeleteTarget)" max-width="380" @update:model-value="v => { if (!v) roomDeleteTarget = null; }">
+            <v-card>
+                <v-card-title class="text-h6 d-flex align-center">
+                    <v-icon class="mr-2" color="error">mdi-delete-outline</v-icon>
+                    {{ t('deleteRoom') }}
+                    <v-spacer></v-spacer>
+                    <v-btn icon density="comfortable" variant="text" size="small" @click="roomDeleteTarget = null">
+                        <v-icon>{{ mdiClose }}</v-icon>
+                    </v-btn>
+                </v-card-title>
+                <v-divider></v-divider>
+                <v-card-text>
+                    <p class="text-body-2 mb-2">
+                        {{ t('deleteRoomConfirm', { name: displayRoomName(roomDeleteTarget && roomDeleteTarget.name) }) }}
+                    </p>
+                    <p class="text-caption text-medium-emphasis mb-3">{{ t('deleteRoomHint') }}</p>
+                    <v-text-field
+                        v-model="roomDeletePassword"
+                        :label="t('roomPasswordAdminOptional')"
+                        type="password"
+                        autocomplete="off"
+                        variant="outlined"
+                        density="comfortable"
+                        hide-details="auto"
+                        @update:model-value="roomDeleteError = ''"
+                    ></v-text-field>
+                    <v-text-field
+                        v-model="roomManagePassword"
+                        :label="t('roomManagePasswordLabel')"
+                        type="password"
+                        autocomplete="off"
+                        variant="outlined"
+                        density="comfortable"
+                        class="mt-2"
+                        hide-details="auto"
+                        :hint="t('roomManagePasswordOptional')"
+                        persistent-hint
+                        :error-messages="roomDeleteError ? [roomDeleteError] : []"
+                        @keyup.enter="submitRoomDelete"
+                        @update:model-value="roomDeleteError = ''"
+                    ></v-text-field>
+                </v-card-text>
+                <v-card-actions>
+                    <v-spacer></v-spacer>
+                    <v-btn variant="text" @click="roomDeleteTarget = null">{{ t('cancel') }}</v-btn>
+                    <v-btn
+                        rounded="pill"
+                        color="error"
+                        variant="flat"
+                        :loading="roomDeleteLoading"
+                        @click="submitRoomDelete"
+                    >{{ t('delete') }}</v-btn>
                 </v-card-actions>
             </v-card>
         </v-dialog>
@@ -1114,8 +1483,13 @@ watch(() => route.fullPath, () => {
                     :active-count="activeRoomCount"
                     :loading="roomsLoading"
                     :has-rooms="filteredRooms.length > 0"
+                    :can-cleanup="isPlatformAdmin"
                     @select="switchRoom"
                     @favorite="toggleFavoriteRoom"
+                    @create="openRoomCreate"
+                    @delete="openRoomDelete"
+                    @cleanup="openRoomCleanup"
+                    @enter="openRoomEnter"
                     variant="sheet"
                 >
                     <template #actions>
@@ -1141,13 +1515,17 @@ watch(() => route.fullPath, () => {
 </template>
 
 <style scoped>
+/* ⚠️ 这里**必须**透明。
+   Vuetify 的 .v-application 自带一层不透明底色（rgb(var(--v-theme-background))），
+   它会盖住 theme.css 里 body::before 那层极光 —— 于是所有毛玻璃容器「透过去还是同一块纯色」，
+   backdrop-filter 等于白写（看得出模糊、看不出玻璃）。
+   底色交给 theme.css 的 --cc-bg / --cc-aurora 统一管。 */
 .app-shell {
-    background: #f4f7fb;
-    transition: background-color 0.2s ease;
+    background: transparent;
 }
 
 .app-shell--dark {
-    background: #0f172a;
+    background: transparent;
 }
 
 .app-shell__main {
@@ -1190,10 +1568,84 @@ watch(() => route.fullPath, () => {
     min-width: 140px;
 }
 
+/* ── 平台密码闸门 ────────────────────────────────────────────────
+   铺满整个视口，跟主界面同一套玻璃语言（深浅两套都靠 theme.css 的令牌自动适配）。 */
+.auth-gate {
+    position: fixed;
+    inset: 0;
+    z-index: 3000;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: var(--cc-gutter, 16px);
+    backdrop-filter: blur(6px);
+    -webkit-backdrop-filter: blur(6px);
+}
+
+.auth-gate__card {
+    width: 100%;
+    max-width: 380px;
+    padding: 32px 28px 28px;
+    border-radius: var(--cc-radius-xl, 28px);
+    border: 1px solid var(--cc-glass-border, rgba(148, 163, 184, 0.26));
+    background: var(--cc-glass-bg-solid, rgba(255, 255, 255, 0.94));
+    backdrop-filter: blur(var(--cc-glass-blur, 18px)) saturate(var(--cc-glass-saturate, 165%));
+    -webkit-backdrop-filter: blur(var(--cc-glass-blur, 18px)) saturate(var(--cc-glass-saturate, 165%));
+    box-shadow: var(--cc-shadow-float, 0 18px 48px rgba(15, 23, 42, 0.22));
+    text-align: center;
+    animation: cc-pop-in var(--cc-dur-slow, 0.36s) var(--cc-ease, ease) both;
+}
+
+.auth-gate__icon {
+    width: 64px;
+    height: 64px;
+    margin: 0 auto 14px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: var(--cc-radius-pill, 999px);
+    color: rgb(var(--v-theme-primary));
+    background: rgba(var(--v-theme-primary), 0.12);
+}
+
+.auth-gate__title {
+    font-size: 1.25rem;
+    font-weight: 650;
+    margin-bottom: 6px;
+    color: var(--cc-text, currentColor);
+}
+
+.auth-gate__desc {
+    font-size: 0.875rem;
+    line-height: 1.6;
+    margin-bottom: 20px;
+    color: var(--cc-text-muted, currentColor);
+}
+
+.auth-gate__field {
+    text-align: left;
+}
+
+.auth-gate__submit {
+    margin-top: 4px;
+    min-height: var(--cc-touch-lg, 46px);
+    font-weight: 600;
+}
+
 .cc-settings__header {
     display: flex;
     align-items: center;
     padding: 10px 16px;
+}
+
+/* 设置面板里的布局 / 展示方式切换：胶囊化，跟工作区条上那组保持同一种语言。 */
+.cc-workspace-toggle {
+    background: transparent !important;
+    border-radius: var(--cc-radius-pill, 999px);
+}
+
+.cc-workspace-toggle :deep(.v-btn) {
+    border-radius: var(--cc-radius-pill, 999px) !important;
 }
 
 .cc-settings__header-wrap {
@@ -1260,35 +1712,6 @@ watch(() => route.fullPath, () => {
     padding: 0;
 }
 
-.cc-settings__reward-row {
-    justify-content: center;
-}
-
-.cc-settings__reward-label {
-    font-size: 12px;
-    color: rgba(0, 0, 0, 0.6);
-    margin-bottom: 4px;
-}
-
-.cc-settings__reward-qr {
-    width: 150px;
-    height: 150px;
-    object-fit: contain;
-    border-radius: 8px;
-}
-
-.cc-settings__warm-text {
-    white-space: pre-line;
-    line-height: 1.7;
-}
-
-.cc-settings__warm-box {
-    background: rgba(99, 102, 241, 0.06);
-    border: 1px solid rgba(148, 163, 184, 0.25);
-    border-radius: 10px;
-    padding: 0.75rem 1rem;
-}
-
 .cc-settings__link-title {
     color: inherit;
 }
@@ -1313,10 +1736,6 @@ watch(() => route.fullPath, () => {
     align-items: center;
     gap: 8px;
     white-space: nowrap;
-}
-
-.cc-settings__donate-btn {
-    margin-top: 2px;
 }
 
 .cc-settings__swatch {

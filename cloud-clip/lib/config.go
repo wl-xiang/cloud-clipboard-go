@@ -28,6 +28,10 @@ type Config struct {
 		// 添加房间相关配置
 		RoomList    bool `json:"roomList"`    // 是否启用房间列表功能
 		RoomCleanup int  `json:"roomCleanup"` // 房间清理间隔（秒）
+		// RoomManagePassword 房间管理密码（新建 / 删除 / 清理房间都要它）。
+		// 与 server.auth 是**两把不同的钥匙**：auth 进平台，这把管房间 ——
+		// 把平台密码给全家共用时，房间管理这把钥匙仍然只在管理员手里。
+		RoomManagePassword string `json:"roomManagePassword"`
 	} `json:"server"`
 	Text struct {
 		Limit int `json:"limit"` //done
@@ -37,17 +41,6 @@ type Config struct {
 		Chunk  int `json:"chunk"`  //done, but no limit
 		Limit  int `json:"limit"`  //done
 	} `json:"file"`
-	// Automation 定时自动化（tasks.json）。
-	//
-	// ⚠️ Enabled 默认 true，但「默认可用」不等于「默认放开」：能不能给**某个房间**装任务
-	// 由 roomAuth[x].automation 决定，公开房间默认是 none（见 auth.go 的
-	// resolveAutomationPolicy）。所以默认开着不会让任何房间凭空多出自动化能力。
-	Automation struct {
-		Enabled      bool   `json:"enabled"`
-		TickSeconds  int    `json:"tickSeconds"`
-		GraceSeconds int    `json:"graceSeconds"`
-		DefaultTZ    string `json:"defaultTZ"`
-	} `json:"automation"`
 }
 
 // var config_path = "config.json"
@@ -110,24 +103,33 @@ func defaultConfig() *Config {
 			Key         string         `json:"key"`
 			RoomList    bool           `json:"roomList"`
 			RoomCleanup int            `json:"roomCleanup"`
+			// 房间管理密码：新建 / 删除 / 清理房间都要它（与 server.auth 两把钥匙）。
+			RoomManagePassword string `json:"roomManagePassword"`
 		}{
 			Host:        []string{"0.0.0.0"},
 			Port:        9501,
 			Prefix:      "",
-			History:     100,
+			History:     100, // 默认历史条数（Docker 侧由 MESSAGE_NUM 覆盖，见 entrypoint.sh）
 			HistoryFile: historyFile,
 			StorageDir:  storageDir,
-			Auth:        false,
+			Auth:        "root1234", // 默认开启访问密码：不带密码进不了平台（Docker 侧由 AUTH_PASSWORD 覆盖）
 			RoomAuth:    RoomAuthConfig{},
 			Cert:        "",
 			Key:         "",
-			RoomList:    false, // 默认关闭房间列表功能
-			RoomCleanup: 3600,  // 默认1小时清理一次空房间
+			RoomList:    true, // 默认**开启**：房间列表是「创建/切换/删除房间」的唯一入口，
+			// 关掉它等于把房间管理整块藏起来（Docker 侧由 ROOM_LIST 覆盖）
+			RoomCleanup: 3600, // 默认1小时清理一次空房间
+			// 默认 newroom123：房间管理（新建/删除/清理）必须出示这把钥匙，
+			// 否则任何能进平台的人都能随手建房间、删掉别人的房间。
+			RoomManagePassword: "newroom123",
 		},
 		Text: struct {
 			Limit int `json:"limit"`
 		}{
-			Limit: 4096,
+			// 9000：长文本（多行代码 / 日志片段）贴进来不该被砍。
+			// 前端输入框跟着这个值走（app.config.text.limit），组件那边用 max-rows 封顶，
+			// 不会因为放长就把发送按钮顶出视口。
+			Limit: 9000,
 		},
 		File: struct {
 			Expire int `json:"expire"`
@@ -136,22 +138,7 @@ func defaultConfig() *Config {
 		}{
 			Expire: 3600,
 			Chunk:  1 * _MB,
-			Limit:  256 * _MB,
-		},
-		Automation: struct {
-			Enabled      bool   `json:"enabled"`
-			TickSeconds  int    `json:"tickSeconds"`
-			GraceSeconds int    `json:"graceSeconds"`
-			DefaultTZ    string `json:"defaultTZ"`
-		}{
-			Enabled:      true,
-			TickSeconds:  30,
-			GraceSeconds: 600,
-			// 默认上海：这个项目的用户绝大多数在 +08:00，而「服务器本地时区」在容器里
-			// 常常是 UTC —— 一个「每天 09:30」的任务会因此在 17:30 发出去，
-			// 而且只有真到了那一天才看得出来。默认值选「用户很可能在的时区」，
-			// 比默认「服务器的时区」安全得多。
-			DefaultTZ: defaultAutomationTZName,
+			Limit:  1024 * _MB, // 默认单文件上限 1GB（Docker 侧由 FILE_LIMIT 覆盖）
 		},
 	}
 }

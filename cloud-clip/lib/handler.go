@@ -130,7 +130,7 @@ func (s *ClipboardServer) handle_server(w http.ResponseWriter, r *http.Request) 
 		authorized = s.canAccessRoom(room, extractAuthToken(r))
 		// ⚠️ `roomProtected` 的含义是「这个房间**实际要不要密码**」，不是「roomAuth 里
 		// 有没有这一项」。两者**不是一回事**：显式 `{open: true}` 的房间在配置里有这一项，
-		// 但不要密码；只写 `{automation: "single"}` 的条目同理。这里曾经用
+		// 但不要密码；只写 `{"fileExpire": 0}` 的条目同理。这里曾经用
 		// hasRoomAuthEntry，后果是 SPA 顶部那个房间 chip 给一个开放房间挂了一把锁
 		// （`/rooms` 的 isProtected 早就是按「要不要密码」算的，漏的就是这一处；
 		// Cloudflare 侧修过同一个 bug，见 workers/src/auth.js 里那段注释）。
@@ -150,15 +150,17 @@ func (s *ClipboardServer) handle_server(w http.ResponseWriter, r *http.Request) 
 		"auth":          authNeeded,
 		"authorized":    authorized,
 		"roomProtected": roomProtected,
+		// globalAuth：**整个平台**要不要密码（只由 server.auth 决定），和「这个房间要不要密码」
+		// 是两件事 —— 前者对应「没登录就进不了平台」的全屏闸门，后者对应房间认证弹窗。
+		// 前端必须能分开：把房间密码也当成平台闸门的话，一个带密码的公开房间会把整个
+		// 站点锁住，连进入别的开放房间都做不到。
+		"globalAuth": globalPassword != "",
 		"config": map[string]interface{}{
 			"server": map[string]interface{}{
 				"history":  s.config.Server.History,
 				"roomList": s.config.Server.RoomList,
 			},
 		},
-		// 定时自动化的能力声明。前端据此决定要不要渲染自动化面板 ——
-		// 唯一来源是这里，前端不要自己判断「这个房间有没有密码」（会和服务端策略漂开）。
-		"automation": s.AutomationCapability(r),
 	}
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(response); err != nil {
@@ -307,21 +309,6 @@ func (s *ClipboardServer) handle_push(w http.ResponseWriter, r *http.Request) {
 			Limit  int `json:"limit"`
 		} `json:"file"`
 		Auth bool `json:"auth"`
-		// Automation 只给**开关**，不给完整能力（tier / max / actions / vars 那些在
-		// `/server` 和管理页自己的 `/tasks` 响应里）。
-		//
-		// ⚠️ 为什么必须有它：SPA 工具栏上那个「定时任务」入口要按「**这个后端支不支持**」
-		// 决定渲不渲染。Cloudflare Worker 部署没有这一族接口，无条件渲染的话点下去会被
-		// SPA 兜底吞掉 —— 用户看到的是「点了定时任务、回到了首页」，和当初被 Service
-		// Worker 吞掉那次同一个症状。
-		//
-		// ⚠️ 前端的 `app.config` 来自**这条 config 事件**，不是 `/server` 的 HTTP 响应
-		// （见 store/websocket.js 的 handleEvent('config')）。所以能力开关必须在这里下发 ——
-		// 只在 `/server` 里加、前端却读 app.config，会得到一个永远为 undefined 的字段，
-		// 表现就是入口在**所有**部署下都不显示。
-		Automation struct {
-			Enabled bool `json:"enabled"`
-		} `json:"automation"`
 	}{
 		Version: server_version,
 		Server: struct {
@@ -336,9 +323,6 @@ func (s *ClipboardServer) handle_push(w http.ResponseWriter, r *http.Request) {
 		Text: s.config.Text,
 		File: s.config.File,
 		Auth: authNeeded,
-		Automation: struct {
-			Enabled bool `json:"enabled"`
-		}{Enabled: s.automationEnabled()},
 	}
 
 	configWsMsg := WebSocketMessage{
@@ -1705,44 +1689,3 @@ func (s *ClipboardServer) handleLatestContent(w http.ResponseWriter, r *http.Req
 	writeError(w, http.StatusNotFound, "content_not_found", "Content not found", "未找到匹配的内容")
 }
 
-// handleRooms 处理房间列表请求
-func (s *ClipboardServer) handleRooms(w http.ResponseWriter, r *http.Request) {
-	// 添加 CORS 头
-	w.Header().Set("Access-Control-Allow-Origin", "*")
-	w.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
-	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Room-Auth-Tokens")
-
-	// 处理预检请求
-	if r.Method == "OPTIONS" {
-		w.WriteHeader(http.StatusOK)
-		return
-	}
-
-	if r.Method != http.MethodGet {
-		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "Only GET is allowed", "仅允许 GET 请求")
-		return
-	}
-
-	// 检查是否启用房间列表功能
-	if !s.config.Server.RoomList {
-		writeError(w, http.StatusForbidden, "room_list_disabled", "Room list disabled", "房间列表功能未启用")
-		return
-	}
-
-	s.logger.Printf("处理房间列表请求，来自: %s", get_remote_ip(r))
-
-	roomList := s.getRoomList(extractAuthTokens(r))
-
-	response := RoomListResponse{
-		Rooms: roomList,
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	if err := json.NewEncoder(w).Encode(response); err != nil {
-		s.logger.Printf("错误: 编码房间列表响应失败: %v", err)
-		writeError(w, http.StatusInternalServerError, "encode_failed", "Failed to encode response", "编码响应失败")
-		return
-	}
-
-	s.logger.Printf("返回房间列表，包含 %d 个房间", len(roomList))
-}

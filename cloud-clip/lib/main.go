@@ -14,6 +14,7 @@ import (
 	"os" // 确保导入 os 包
 	"path/filepath"
 	"runtime/debug"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -143,6 +144,13 @@ func NewClipboardServer(cfg *Config) (*ClipboardServer, error) {
 
 	if err := s.loadHistoryData(); err != nil {
 		s.logger.Printf("警告: 加载历史记录失败: %v. 将以空历史记录启动。", err)
+	}
+
+	// 自建房间注册表。加载失败不致命：最坏情况是这次启动看不到自建房间
+	// （用户会看到「我的房间没了」，比直接起不来更容易恢复）。
+	s.roomRegistry = newRoomRegistry(s.roomRegistryPath(), s.logger)
+	if err := s.roomRegistry.load(); err != nil {
+		s.logger.Printf("警告: 加载自建房间注册表失败: %v。将按空表启动。", err)
 	}
 
 	// 如果启用了房间列表功能，启动房间清理任务
@@ -377,13 +385,11 @@ func (s *ClipboardServer) setupRoutes() {
 	mux.HandleFunc(prefix+"/auth/token/refresh", s.corsMiddleware(s.handleAuthTokenRefresh))
 	mux.HandleFunc(prefix+"/push", s.handle_push)
 	mux.HandleFunc(prefix+"/rooms", s.corsMiddleware(s.handleRooms))
-	// /tasks：定时自动化的管理接口。鉴权在 handler 内按**房间凭据**分档
-	// （与 /share 同一套思路），不走 authMiddleware —— 后者只回答「能不能进这个房间」，
-	// 而 /tasks 还要区分「全局密码 = 管理员」这一档，以及房间的 automation 策略。
-	mux.HandleFunc(prefix+"/tasks", s.corsMiddleware(s.handleTasks))
-	mux.HandleFunc(prefix+"/tasks/", s.corsMiddleware(s.handleTaskItem))
-	// /automation：自动化管理页（服务端渲染的独立页面，不进 SPA 构建）。
-	mux.HandleFunc(prefix+"/automation", s.handleAutomationPage)
+	// /rooms/cleanup 必须**注册在 /rooms/ 之前**可读性才不乱，但 ServeMux 按最长前缀匹配，
+	// 顺序其实无所谓 —— 写在这里是为了让「有一条更具体的子路径」一眼可见。
+	mux.HandleFunc(prefix+"/rooms/cleanup", s.corsMiddleware(s.handleRoomCleanup))
+	// /rooms/{name}：删除自建房间。名字在路径里，所以必须放在 /rooms/ 前缀下。
+	mux.HandleFunc(prefix+"/rooms/", s.corsMiddleware(s.handleRoomItem))
 	// /share 在 handler 内按目标资源所在房间鉴权（支持 body 中的 file uuid）
 	mux.HandleFunc(prefix+"/share", s.handle_share)
 	// /share/list 用和「在该房间签发分享」同一套鉴权（canAccessRoom），
@@ -488,8 +494,6 @@ func (s *ClipboardServer) Start() error {
 	s.runMutex.Unlock()
 
 	go s.cleanExpiredFilesLoop()
-	// 定时任务调度器：进程内 ticker，扫到期任务并投递（见 scheduler.go）。
-	s.startAutomationScheduler()
 
 	// 为每个监听器创建一个单独的HTTP服务器并启动goroutine
 	errChan := make(chan error, len(listeners))
@@ -542,10 +546,6 @@ func (s *ClipboardServer) Start() error {
 }
 
 func (s *ClipboardServer) Stop() error {
-	// ⚠️ 必须在取 runMutex **之前**调：stopAutomationScheduler 自己也要拿这把锁，
-	// 在里面调会直接死锁 —— 而 Stop 是关闭路径，死锁意味着进程关不掉。
-	s.stopAutomationScheduler()
-
 	s.runMutex.Lock()
 	defer s.runMutex.Unlock()
 
@@ -882,7 +882,16 @@ func (s *ClipboardServer) updateRoomDeviceCount(room string, deviceID string, co
 }
 
 // getRoomList 获取房间列表
-func (s *ClipboardServer) getRoomList(tokens []string) []RoomInfo {
+// getRoomList 组装房间列表。
+//
+// ⚠️ 这里**不再按「能不能进」过滤**：列表对所有人可见是明确要求 ——
+// 看不到有哪些房间，就谈不上「切换房间」。真正拦人的是**进入**那一步
+// （roomProtected / isProtected 告诉界面哪些房间要密码，见 handle_push 与 handle_rooms）。
+// 代价是房间名对未认证的调用方也是可见的；这是需求本身的选择，不是漏考虑。
+//
+// admin：请求方是否持有平台管理员凭据。只影响每个房间的 canManage 提示，
+// 不改变列表内容（管理员不多看到任何房间——所有人看到的列表是一样的）。
+func (s *ClipboardServer) getRoomList(tokens []string, admin bool) []RoomInfo {
 	if !s.config.Server.RoomList {
 		return []RoomInfo{}
 	}
@@ -914,55 +923,47 @@ func (s *ClipboardServer) getRoomList(tokens []string) []RoomInfo {
 	roomStatsSnapshot := make(map[string]RoomStat)
 	s.roomStatsMutex.RLock()
 	for room, stat := range s.roomStats {
-		// 创建副本，避免长时间持有锁
 		roomStatsSnapshot[room] = RoomStat{
 			MessageCount: stat.MessageCount,
 			LastActive:   stat.LastActive,
 			DeviceIDs:    make(map[string]bool),
 		}
-		// 复制 DeviceIDs
-		for deviceID, active := range stat.DeviceIDs {
-			roomStatsSnapshot[room].DeviceIDs[deviceID] = active
-		}
 	}
 	s.roomStatsMutex.RUnlock()
 
-	// 第四步：在无锁状态下处理数据
+	// 第四步：在无锁状态下处理数据。
+	// 注意这里和以前有一处**关键差别**：不再 `if !accessible { continue }`。
 	allRooms := make(map[string]bool)
-
-	// 添加有消息的房间
 	for room := range roomMessageCounts {
 		allRooms[room] = true
 	}
-
-	// 添加有连接的房间
 	for room := range currentRooms {
 		allRooms[room] = true
 	}
-
-	// 添加统计中的房间
 	for room := range roomStatsSnapshot {
 		allRooms[room] = true
 	}
+	// 自建房间必须出现 —— 刚建好、还没发过消息也没人连过，上面三处都不会带上它。
+	// 少了这一步，用户会看到「建好了但列表里没有」，然后以为没建成功。
+	if s.roomRegistry != nil {
+		for _, managed := range s.roomRegistry.list() {
+			allRooms[managed.Name] = true
+		}
+	}
+	// 预置房间（配置文件里的 roomAuth）也一样：它们是「存在的房间」，
+	// 哪怕此刻没人用、没消息 —— 列表里应当看得见。
+	for room := range s.config.Server.RoomAuth {
+		allRooms[normalizeRoomName(room)] = true
+	}
+	// 公共房间永远在（它就是默认落脚点）。
+	allRooms[defaultRoomKey] = true
 
 	var roomList []RoomInfo
 	for room := range allRooms {
-		accessible := s.canAccessRoom(room, "")
-		if !accessible {
-			for _, token := range tokens {
-				if s.canAccessRoom(room, token) {
-					accessible = true
-					break
-				}
-			}
-		}
-		if !accessible {
-			continue
-		}
-
 		// 显示时转换：default 显示为空字符串
 		displayRoom := room
-		if room == "default" {
+		isDefault := room == defaultRoomKey
+		if isDefault {
 			displayRoom = ""
 		}
 
@@ -977,13 +978,11 @@ func (s *ClipboardServer) getRoomList(tokens []string) []RoomInfo {
 		if stat, ok := roomStatsSnapshot[room]; ok {
 			lastActive = stat.LastActive
 		}
-
-		// 如果有活跃连接，更新最后活跃时间
 		if deviceCount > 0 {
 			lastActive = time.Now().Unix()
 		}
 
-		roomInfo := RoomInfo{
+		roomList = append(roomList, RoomInfo{
 			Name:         displayRoom,
 			MessageCount: messageCount,
 			DeviceCount:  deviceCount,
@@ -992,25 +991,22 @@ func (s *ClipboardServer) getRoomList(tokens []string) []RoomInfo {
 			// 用「实际需不需要密码」而不是「roomAuth 里有没有这一项」：
 			// 显式配了空密码的房间是**开放**的，报成受保护会让房间列表挂一把不存在的锁。
 			IsProtected: s.resolveRoomAuth(room).Required,
-		}
-
-		roomList = append(roomList, roomInfo)
+			IsDefault:   isDefault,
+			CanManage:   s.canManageRoom(room, tokens, admin),
+			CreatedAt:   s.roomCreatedAt(room),
+		})
 	}
 
-	// 排序：活跃房间优先，然后按最后活跃时间排序
-	for i := 0; i < len(roomList)-1; i++ {
-		for j := i + 1; j < len(roomList); j++ {
-			if roomList[i].IsActive != roomList[j].IsActive {
-				if roomList[j].IsActive {
-					roomList[i], roomList[j] = roomList[j], roomList[i]
-				}
-			} else {
-				if roomList[i].LastActive < roomList[j].LastActive {
-					roomList[i], roomList[j] = roomList[j], roomList[i]
-				}
-			}
+	// 排序：公共房间永远第一个（它是兜底），其余活跃优先，再按最后活跃时间。
+	sort.SliceStable(roomList, func(i, j int) bool {
+		if roomList[i].IsDefault != roomList[j].IsDefault {
+			return roomList[i].IsDefault
 		}
-	}
+		if roomList[i].IsActive != roomList[j].IsActive {
+			return roomList[i].IsActive
+		}
+		return roomList[i].LastActive > roomList[j].LastActive
+	})
 
 	return roomList
 }
@@ -1106,10 +1102,15 @@ func (s *ClipboardServer) cleanupEmptyRooms() {
 
 // normalizeRoomName 统一房间名称处理
 // 空字符串和"default"都转换为"default"，其他保持不变
+// 公共房间（默认房间）的内部键。空字符串与 "default" 都归一到它 ——
+// 界面上显示为空字符串（「公共房间」），内部一律用这个键。
+// ⚠️ 这个房间**不允许删除**：它是所有人的兜底落脚点（见 handler.go 的 handleRoomItem）。
+const defaultRoomKey = "default"
+
 func normalizeRoomName(room string) string {
 	room = strings.TrimSpace(room)
-	if room == "" || room == "default" {
-		return "default"
+	if room == "" || room == defaultRoomKey {
+		return defaultRoomKey
 	}
 	return room
 }

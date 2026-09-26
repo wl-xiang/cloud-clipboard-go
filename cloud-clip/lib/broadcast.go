@@ -90,21 +90,14 @@ func (s *ClipboardServer) broadcastMessage(message PostEvent, room string) {
 
 // messageSource 一条消息的来源信息。
 //
-// 为什么要有它：这些字段原本是直接从 *http.Request 上现取的，但定时任务**没有请求** ——
-// 它由调度器在进程内发起。抽成这个结构之后，「HTTP 投递」和「定时投递」共用同一条
-// 入队 → 房间统计 → 广播 → 持久化路径，不会出现「定时消息漏了房间统计」这种
-// 只在其中一条路径上存在的差异（这类差异最难受：两边单看都对，对比才发现不一样）。
+// 抽成结构（而不是在各处直接读 *http.Request）是为了让「谁在投递这条消息」和
+// 「怎么入队 / 统计 / 广播 / 落盘」解耦 —— 后者是一条公共路径，别在调用点各写一遍。
 type messageSource struct {
 	IP         string
 	UserAgent  string
 	DeviceName string
 	ClientID   string
 
-	// Source 标记来源类别（空 = 人发的）。目前只有 "automation"。
-	Source string
-	// ScheduledAt 是定时任务的**预定**触发时刻；Late 标记这是一条补发。
-	ScheduledAt int64
-	Late        bool
 }
 
 func messageSourceFromRequest(r *http.Request) messageSource {
@@ -119,12 +112,14 @@ func messageSourceFromRequest(r *http.Request) messageSource {
 
 // senderDevice 组装 SenderDevice。
 //
-// ⚠️ 没有 UA 的来源（定时任务）**不能**去调 parse_user_agent：那会拿到
+// ⚠️ 没有 UA 的来源（curl / 脚本调接口）**不能**去调 parse_user_agent：那会拿到
 // `"os": " "` / `"browser": " "` 这种带空格的脏值，而前端的 deviceLabel 取值顺序是
-// name → os → type —— 于是定时消息会被显示成一个空格。
+// name → os → type —— 于是这条消息会被显示成一个空格。
 func (s *ClipboardServer) senderDevice(src messageSource) map[string]string {
 	if strings.TrimSpace(src.UserAgent) == "" {
-		return map[string]string{"name": src.DeviceName, "type": "Automation"}
+		// type 用 "other"：前端 deviceIcon/deviceTypeLabel 都能认出它
+		// （认不出的 type 会退化成桌面图标，但那是个「碰巧对」的结果，不该依赖）。
+		return map[string]string{"name": src.DeviceName, "type": "other"}
 	}
 	return s.parse_user_agent(src.UserAgent, src.DeviceName)
 }
@@ -132,17 +127,14 @@ func (s *ClipboardServer) senderDevice(src messageSource) map[string]string {
 // addMessageToQueueAndBroadcast 添加消息到队列并广播（HTTP 路径 —— 人发的消息）。
 // 这是一个辅助函数，供 handle_text, handle_finish 等调用
 func (s *ClipboardServer) addMessageToQueueAndBroadcast(dataType string, data interface{}, room string, r *http.Request) PostEvent {
-	return s.deliverMessage(dataType, data, room, messageSourceFromRequest(r), true)
+	return s.deliverMessage(dataType, data, room, messageSourceFromRequest(r))
 }
 
-// deliverMessage 投递一条消息。
+// deliverMessage 把一条消息入队、统计、广播并落盘。
 //
-// keepHistory=false（定时消息的默认档）时**不入历史队列、不计房间统计**，只做实时广播。
-// 为什么这是默认值：房间历史是**按房间**计数的（见 msg.go 的 trimRoomHistoryLocked），
-// 额度就是 server.history（README 的 MESSAGE_NUM 默认 10，config.json 默认 100）。
-// 一个每天 09:30 的任务，十几天就能把这个房间的历史全换成「今天是几号」，
-// 用户翻记录什么都找不到了 —— 那不是「功能不好用」，是「把已有数据弄坏了」。
-func (s *ClipboardServer) deliverMessage(dataType string, data interface{}, room string, src messageSource, keepHistory bool) PostEvent {
+// 曾经有个 keepHistory 参数（定时消息默认不占房间历史额度），随定时功能一起去掉了 ——
+// 现在所有消息都占额度，那个「可关」的开关只服务一个已经不存在的调用方。
+func (s *ClipboardServer) deliverMessage(dataType string, data interface{}, room string, src messageSource) PostEvent {
 	// Create ReceiveBase first
 	receiveBase := ReceiveBase{
 		// ID will be set by PostList.Append（临时消息在下面单独分配）
@@ -152,9 +144,6 @@ func (s *ClipboardServer) deliverMessage(dataType string, data interface{}, room
 		SenderIP:       src.IP,
 		SenderDevice:   s.senderDevice(src),
 		SenderClientID: src.ClientID,
-		Source:         src.Source,
-		ScheduledAt:    src.ScheduledAt,
-		Late:           src.Late,
 	}
 
 	// Create ReceiveHolder
@@ -180,14 +169,9 @@ func (s *ClipboardServer) deliverMessage(dataType string, data interface{}, room
 		Data:  rh,       // ReceiveHolder
 	}
 
-	if keepHistory {
-		s.messageQueue.Append(&storeEvent) // msg.go 处理这个 PostEvent
-		s.updateRoomStats(room, 1)
-	} else {
-		// 临时消息也要有唯一 ID：前端拿它做列表 key，也会用它发起「复制 / 引用」。
-		// 用**同一个计数器**分配（只是不进 List），ID 就不会和普通消息撞。
-		storeEvent.Data.SetID(s.messageQueue.NextEphemeralID())
-	}
+	// 每条消息都进历史（ID 由队列分配，前端拿它做列表 key，也用它发起「复制 / 引用」）。
+	s.messageQueue.Append(&storeEvent) // msg.go 处理这个 PostEvent
+	s.updateRoomStats(room, 1)
 
 	// 准备发送给客户端的 WebSocket 消息
 	var clientPayload interface{}
@@ -205,9 +189,7 @@ func (s *ClipboardServer) deliverMessage(dataType string, data interface{}, room
 		s.broadcastWebSocketMessage(wsMsg, room)
 	}
 
-	if keepHistory {
-		s.saveHistoryData()
-	}
+	s.saveHistoryData()
 	return storeEvent // 返回内部事件，例如用于获取ID
 }
 

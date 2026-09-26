@@ -115,8 +115,14 @@ function handlePageDrop(event) {
 </template>
 
 <style scoped>
+/* ⚠️ 页面底色**刻意留空**（继承全局背景）。
+   这里原来是一层不透明的品牌色（#fdf7e4 / #211d12），后果有两个：
+     1. 它盖住了全局的极光底 —— 同一个「深色模式」在标准模式下和在这个模式下
+        是两种完全不同的底色，来回切就像换了套皮肤（用户报的「切换样式显示很奇怪」）；
+     2. 它要求和主题**各写一份**，两份里漏一份就会在深色下露出一块浅色。
+   模式的身份交给面板 / 强调色表达，背景一律由 theme.css 的 --cc-bg + 极光统一管。 */
 .sticky-wall {
-    background: #fdf7e4;
+    background: transparent;
     height: 100vh;
     height: 100dvh;
     display: flex;
@@ -154,7 +160,7 @@ function handlePageDrop(event) {
 }
 
 .sticky-wall--dark {
-    background: #211d12;
+    background: transparent;
     color: rgba(238, 232, 214, 0.95);
 }
 

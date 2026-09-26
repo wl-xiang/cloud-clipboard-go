@@ -164,6 +164,12 @@ export const useWebSocketStore = defineStore('websocket', {
             if (Object.prototype.hasOwnProperty.call(response.data || {}, 'roomProtected')) {
                 this.setRoomProtection(room, response.data.roomProtected);
             }
+            // 每一次 /server 都是「平台闸门要不要开着」的最新依据 ——
+            // 登录成功后 connect() 会再问一次，那时 authorized 变 true，闸门自己就撤了。
+            useAppStore().setAuthState({
+                globalAuth: response.data?.globalAuth === true,
+                authorized: response.data?.authorized !== false,
+            });
             return response.data;
         },
         async verifyRoomAccess(room, token) {
@@ -312,6 +318,13 @@ export const useWebSocketStore = defineStore('websocket', {
                 // 受保护房间时会永远探测不到，导致既不连接也不弹认证窗口。
                 const serverInfo = await this.fetchServerInfo(currentRoom);
                 if (!resolvedToken && serverInfo.auth) {
+                    // 平台级闸门（server.auth）没通过时**不弹房间对话框**：
+                    // 那时全屏闸门已经盖住了整个界面，再叠一个房间对话框只会让人不知道该填哪个。
+                    // 密码由闸门统一收，通过后这里有 token，直接往下走。
+                    if (serverInfo.globalAuth === true && serverInfo.authorized !== true) {
+                        this.websocketConnecting = false;
+                        return;
+                    }
                     resolvedToken = await this.resolveAuthTokenForRoom(currentRoom, { interactive: true });
                     if (resolvedToken === null) {
                         this.websocketConnecting = false;
@@ -650,6 +663,43 @@ export const useWebSocketStore = defineStore('websocket', {
 
             await router.push({ path: '/', query: targetQuery });
             return true;
+        },
+        // 平台闸门提交。和房间认证**分开**：房间那套要处理「切房间 / 待进入房间」，
+        // 平台这层只有一件事 —— 拿全局令牌、重连、让 /server 把 authorized 翻成 true。
+        async submitPlatformPassword(password) {
+            const value = (password || '').trim();
+            if (!value || this.authDialogLoading) {
+                return false;
+            }
+            this.authDialogLoading = true;
+            this.authCodeError = '';
+            try {
+                const response = await axios.post('auth/token', { password: value }, {
+                    params: new URLSearchParams([['room', this.normalizeRoomName(this.room)]]),
+                    __skipRoomAuthHandling: true,
+                });
+                const data = response.data || {};
+                const token = data.token || '';
+                if (!token) {
+                    this.authCodeError = 'authInvalid';
+                    return false;
+                }
+                // scope=global 说明填的是**平台密码**（不是某个房间的密码）——
+                // 缓存到 GLOBAL_ROOM_KEY，这样任何房间都能用它（服务端 tokenMatchesRoom 认全局令牌）。
+                const cacheKey = data.scope === 'global' ? GLOBAL_ROOM_KEY : this.normalizeRoomName(this.room);
+                this.cacheAuthTokenForRoom(cacheKey, token, Number(data.expiresAt) || 0);
+                this.inputPassword = '';
+                this.retry = 0;
+                // 重连会重新拉一次 /server，闸门据此自己撤掉。
+                await this.connect();
+                return true;
+            } catch (error) {
+                console.error('Platform authentication failed:', error);
+                this.authCodeError = 'authInvalid';
+                return false;
+            } finally {
+                this.authDialogLoading = false;
+            }
         },
         async submitAuthCodeForPendingRoom() {
             const targetRoom = this.authPendingRoom || this.currentRoom;

@@ -67,9 +67,10 @@
 | 💾 **Flexible Storage** | Configurable history capacity and file expiration policies |
 | 🚀 **Lightweight** | Minimal resource consumption, runs smoothly even on routers or low-spec hardware |
 | 🔍 **Shortcuts Support** | Android and iOS shortcut integration for one-tap sharing |
-| 🎨 **Nine UI Modes** | Timeline, glance, action bench, sticky notes, board and more — each mode keeps its own display settings, and `?mode=` in the URL pins one mode per browser tab (chat bubbles / mega / workbench / terminal are being retired) |
+| 🎨 **Seven UI Modes** | Timeline, glance, action bench, chat bubbles, sticky notes, workbench and board — each mode keeps its own display settings, and `?mode=` in the URL pins one mode per browser tab |
+| 🚪 **Room management** | Everyone can see the room list, but entering a room requires that room's password. Creating, deleting and cleaning up rooms all require the **room management password** (`ROOM_MANAGE_PASSWORD`, default `newroom123` — change it). The public room can never be deleted. Rooms are stored in `rooms.json` next to the history file |
+| 🧱 **Layouts & Views** | Standard mode ships three layouts — stacked (composer on top), side by side (composer on the left), and chat-style (history on top, composer pinned to the bottom) — plus two history views: timeline list and grid, where the column count adapts to the window width. Switch from the workspace bar (also under Settings → Personalization); the choice is stored per browser |
 | 🧩 **Action Library** | 35 built-in actions: Markdown rendering, JSON beautify/minify, Base64 / URL / Hex codecs, pinyin annotation (per character · table · by word), traditional↔simplified conversion, date math, hashing — use one to view an entry differently, or chain several into a pipeline |
-| ⏰ **Scheduled Automations** | Post rendered text into a room on a schedule — daily / weekly / once / 5-field cron. Bodies are templates (`{{date:+1d}}`, `{{weekday:+1d}}`, `{{latest}}`), and the server-runnable subset of the action library can be chained in. Policy is per room via `roomAuth[x].automation`, and scheduled messages don't consume room history by default (Go server only — the Cloudflare Worker has no scheduler) |
 
 ---
 
@@ -106,13 +107,13 @@ services:
       LISTEN_IP6: ${LISTEN_IP6:-}               # Listening IPv6 address, default empty (use :: for IPv6)
       LISTEN_PORT: ${LISTEN_PORT:-}             # Server port, default 9501
       PREFIX: ${PREFIX:-}                       # Subpath prefix for reverse proxies (e.g., /cloud-clipboard)
-      MESSAGE_NUM: ${MESSAGE_NUM:-}             # Number of history records to keep, default 10
-      AUTH_PASSWORD: ${AUTH_PASSWORD:-}         # Global access password, leave empty for no password
+      MESSAGE_NUM: ${MESSAGE_NUM:-}             # Number of history records to keep, default 100
+      AUTH_PASSWORD: ${AUTH_PASSWORD:-}         # Global access password, default root1234 (auth is ON by default; set to false to disable)
       ROOM_AUTH_JSON: '${ROOM_AUTH_JSON:-{}}'   # Room-level auth and policy JSON, e.g. {"finance":"pass","keep":{"password":"kp","fileExpire":0}}
-      TEXT_LIMIT: ${TEXT_LIMIT:-}               # Max text length in characters, default 4096 (approx. 2048 Chinese characters)
+      TEXT_LIMIT: ${TEXT_LIMIT:-}               # Max text length in characters, default 9000
       FILE_EXPIRE: ${FILE_EXPIRE:-}             # File retention period in seconds, default 3600 (1 hour), 0 for no expiration
-      FILE_LIMIT: ${FILE_LIMIT:-}               # Max file size in bytes, default 104857600 (100MB)
-      ROOM_LIST: ${ROOM_LIST:-}                 # Display public room list in UI, default false
+      FILE_LIMIT: ${FILE_LIMIT:-}               # Max file size in bytes, default 1073741824 (1GB)
+      ROOM_LIST: ${ROOM_LIST:-}                 # Room list & room management UI, default true
       MKCERT_DOMAIN_OR_IP: ${MKCERT_DOMAIN_OR_IP:-} # Domains/IPs for automatic mkcert SSL certs (space separated)
       MANUAL_KEY_PATH: ${MANUAL_KEY_PATH:-}     # Manual SSL private key path (overrides mkcert)
       MANUAL_CERT_PATH: ${MANUAL_CERT_PATH:-}   # Manual SSL certificate path (overrides mkcert)

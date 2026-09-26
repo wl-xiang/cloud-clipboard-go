@@ -10,7 +10,7 @@ import { useTaskListToggle } from '@/composables/useTaskListToggle.js';
 import MarkdownBody from '@/components/MarkdownBody.vue';
 import MarkdownToggle from '@/components/MarkdownToggle.vue';
 import ShareLinkButton from '@/components/ShareLinkButton.vue';
-import { copyTextToClipboard, deviceLabel, errorMessage, formatTimestamp, isAutomationMessage, isLateMessage } from '@/util.js';
+import { copyTextToClipboard, deviceLabel, errorMessage, formatTimestamp } from '@/util.js';
 
 const mdiCellphone = 'mdi-cellphone';
 const mdiChevronRight = 'mdi-chevron-right';
@@ -22,12 +22,17 @@ const mdiIpNetworkOutline = 'mdi-ip-network-outline';
 const mdiCodeTags = 'mdi-code-tags';
 const mdiLanguageMarkdown = 'mdi-language-markdown';
 const mdiPound = 'mdi-pound';
-const mdiCalendarClock = 'mdi-calendar-clock';
-const mdiClockAlertOutline = 'mdi-clock-alert-outline';
 const props = defineProps({
     meta: {
         type: Object,
         default: () => ({}),
+    },
+    // 宫格展示时卡片宽度只有 ~300px（见 DefaultMode 的 .timeline-panel__stream--grid）。
+    // 元信息那一行（类型 + 时间 + 设备 + IP）在窄格里必须允许折行，
+    // 否则它会把卡片顶宽、或者被裁掉一半。
+    grid: {
+        type: Boolean,
+        default: false,
     },
 });
 const app = useAppStore();
@@ -59,9 +64,6 @@ const { text: decodedContent, onMdClick } = useTaskListToggle(props.meta, () => 
 const md = useMarkdown(() => decodedContent.value);
 const decodedContentPreview = computed(() => decodedContent.value);
 
-// 定时消息的两个标记。**判定在 util.js**（单点，见那边的注释），这里只负责画。
-const isAutomation = computed(() => isAutomationMessage(props.meta));
-const isLate = computed(() => isLateMessage(props.meta));
 function deviceIcon(type) {
     const lowerType = (type || '').toLowerCase();
     if (lowerType.includes('mobile') || lowerType.includes('phone') || lowerType.includes('tablet') || lowerType.includes('ios') || lowerType.includes('android')) {
@@ -101,32 +103,18 @@ async function deleteItem() {
 
 <template>
     <v-hover v-slot="{ isHovering, props }">
-        <v-card :elevation="isHovering ? 10 : 2" v-bind="props" class="timeline-card timeline-card--text timeline-card--id-float mb-3 transition-swing" :class="{ 'timeline-card--dark': isDark }">
+        <v-card :elevation="isHovering ? 10 : 2" v-bind="props" class="timeline-card timeline-card--text timeline-card--id-float mb-3 transition-swing cc-lift" :class="{ 'timeline-card--dark': isDark, 'timeline-card--grid': grid }">
             <div v-if="meta.id" class="text-caption text-grey-darken-1 timeline-card__id-float">
                 <v-icon size="x-small" class="mr-1">{{ mdiPound }}</v-icon>{{ meta.id }}
             </div>
             <v-card-text>
                 <div class="d-flex flex-row align-start">
                     <div class="flex-grow-1" style="min-width: 0">
-                        <div class="text-caption d-flex flex-nowrap align-center mb-2 timeline-card__meta" v-if="meta.timestamp && (app.display.timestamp || app.display.device || app.display.ip || isAutomation)">
+                        <div class="text-caption d-flex flex-nowrap align-center mb-2 timeline-card__meta" v-if="meta.timestamp && (app.display.timestamp || app.display.device || app.display.ip)">
                             <v-chip size="x-small" label variant="flat" color="primary" class="mr-2 flex-shrink-0">{{ t('textMessage') }}</v-chip>
-                            <!-- 定时消息的来源标记。
-                                 ⚠️ 它**刻意不受** app.display 那三个开关管：那不是「元信息显示项」，
-                                 而是「这条不是人发的」这个事实本身 —— 能关掉的话，用户就再也分不出
-                                 定时消息和普通消息了（sender 名可以改，不能只靠它）。上面那个 v-if 里
-                                 额外带上 isAutomation 就是为了这个。 -->
-                            <span v-if="isAutomation" class="mr-3 text-no-wrap flex-shrink-0"><v-icon size="x-small" class="mr-1">{{ mdiCalendarClock }}</v-icon>{{ t('automationSource') }}</span>
                             <template v-if="app.display.timestamp">
                                 <span class="mr-3 text-no-wrap flex-shrink-0"><v-icon size="x-small" class="mr-1">{{ mdiClockOutline }}</v-icon>{{ formatTimestamp(meta.timestamp) }}</span>
                             </template>
-                            <!-- 补发标记。正文里的日期按**原定时刻**算，而 timestamp 是实际发送时刻，
-                                 两者对不上是设计如此（见 scheduler.go 的 executeAutomationTask）——
-                                 不标一下，用户会以为这条消息坏了。 -->
-                            <v-tooltip v-if="isLate" :text="t('automationLateHint')" location="top">
-                                <template v-slot:activator="{ props }">
-                                    <span v-bind="props" class="mr-3 text-no-wrap flex-shrink-0"><v-icon size="x-small" class="mr-1" color="warning">{{ mdiClockAlertOutline }}</v-icon>{{ t('automationLate') }}</span>
-                                </template>
-                            </v-tooltip>
                             <template v-if="app.display.device && meta.senderDevice?.type">
                                 <span class="mr-3 text-no-wrap flex-shrink-0"><v-icon size="x-small" class="mr-1">{{ deviceIcon(meta.senderDevice.type) }}</v-icon>{{ deviceLabel(meta.senderDevice) }}</span>
                             </template>
@@ -209,6 +197,35 @@ async function deleteItem() {
     display: block;
     height: 4px;
     background: linear-gradient(90deg, #0ea5e9, #14b8a6);
+}
+
+/* ── 宫格变体 ─────────────────────────────────────────────────
+   窄格里元信息一行（类型 + 时间 + 设备 + IP）要能折行，
+   否则它会横着把卡片撑破；正文预览也要多给一行 ——
+   宫格里卡片本来就矮，只留一行预览看不出内容差别。 */
+.timeline-card--grid .timeline-card__meta {
+    /* Vuetify 的 .flex-nowrap 带 !important，不写 !important 压不住 */
+    flex-wrap: wrap !important;
+    row-gap: 2px;
+}
+
+.timeline-card--grid .timeline-card__preview {
+    align-items: flex-start;
+}
+
+.timeline-card--grid .timeline-card__preview > span {
+    display: -webkit-box;
+    -webkit-line-clamp: 3;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+    /* ⚠️ 必须 !important：这个 span 挂着 Vuetify 的 .text-truncate，
+       而那条规则的 white-space/overflow 都是 !important。 */
+    white-space: normal !important;
+    word-break: break-word;
+}
+
+.timeline-card--grid :deep(.v-card-text) {
+    padding: 12px 14px 12px;
 }
 
 .timeline-card__meta {

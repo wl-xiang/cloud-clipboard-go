@@ -10,6 +10,10 @@ const mdiHeartOutline = 'mdi-heart-outline';
 const mdiLock = 'mdi-lock';
 const mdiMagnify = 'mdi-magnify';
 const mdiHomeOutline = 'mdi-home-outline';
+const mdiPlus = 'mdi-plus';
+const mdiDeleteOutline = 'mdi-delete-outline';
+const mdiBroom = 'mdi-broom';
+const mdiDoorOpen = 'mdi-door-open';
 
 const props = defineProps({
     // 分组在 App.vue 里算好（收藏 / 活跃 / 其他 依赖派生逻辑，不属于展示层）
@@ -30,9 +34,12 @@ const props = defineProps({
     // 侧栏停在哪一侧。只有 dock 变体用得上：内侧那条发丝线得画在朝向内容的那一边，
     // 而且要用模式的 --rl-border（画在 App.vue 的容器上就只能写死一个灰，接缝一眼看得出来）。
     dockSide: { type: String, default: 'right' },
+    // 平台管理员才显示「清理无用房间」。这只是**界面提示** ——
+    // 服务端 /rooms/cleanup 会再校验一次（UI 隐藏 ≠ 权限，见 handler_rooms.go）。
+    canCleanup: { type: Boolean, default: false },
 });
 
-const emit = defineEmits(['update:search', 'select', 'favorite']);
+const emit = defineEmits(['update:search', 'select', 'favorite', 'create', 'delete', 'cleanup', 'enter']);
 
 const app = useAppStore();
 const theme = useTheme();
@@ -141,6 +148,42 @@ function isCurrent(room) {
                 ></v-text-field>
             </div>
 
+            <!-- 房间管理动作。放在搜索框下面、列表上面 ——
+                 它管的是「这一整份列表」，不是列表里的某一行。 -->
+            <div class="rl__actions">
+                <v-btn
+                    size="small"
+                    variant="flat"
+                    color="primary"
+                    rounded="pill"
+                    class="text-none cc-press rl__action"
+                    @click="emit('create')"
+                >
+                    <v-icon start size="18">{{ mdiPlus }}</v-icon>{{ t('createRoom') }}
+                </v-btn>
+                <v-btn
+                    v-if="canCleanup"
+                    size="small"
+                    variant="outlined"
+                    rounded="pill"
+                    class="text-none cc-press rl__action"
+                    @click="emit('cleanup')"
+                >
+                    <v-icon start size="18">{{ mdiBroom }}</v-icon>{{ t('cleanupRooms') }}
+                </v-btn>
+                <!-- 按名称进入：列表里没有的房间（别人告诉你的、或刚在配置文件里加的）
+                     仍然要能进去。这是列表之外唯一的口子，所以留在这里而不是工具栏上。 -->
+                <v-btn
+                    size="small"
+                    variant="text"
+                    rounded="pill"
+                    class="text-none cc-press rl__action"
+                    @click="emit('enter')"
+                >
+                    <v-icon start size="18">{{ mdiDoorOpen }}</v-icon>{{ t('enterRoomByName') }}
+                </v-btn>
+            </div>
+
             <div class="rl__summary">
                 <span class="rl__pill rl__pill--accent">{{ currentRoomName }}</span>
                 <span class="rl__pill">{{ favoriteCount }} {{ t('favoriteRoomsLabel') }}</span>
@@ -226,6 +269,16 @@ function isCurrent(room) {
                                 <span class="rl-row__time">{{ relativeTime(room.lastActive) }}</span>
                             </span>
                         </span>
+                        <button
+                            v-if="room.canManage"
+                            type="button"
+                            class="rl-row__del"
+                            :title="t('deleteRoom')"
+                            :aria-label="t('deleteRoom')"
+                            @click.stop="emit('delete', room)"
+                        >
+                            <v-icon size="x-small">{{ mdiDeleteOutline }}</v-icon>
+                        </button>
                         <button
                             type="button"
                             class="rl-row__fav"
@@ -470,6 +523,42 @@ function isCurrent(room) {
    那个根自己就是 .v-field，写成后代选择器等于要求它是自己的后代，永远不匹配。 */
 .rl__toolbar :deep(.v-field) {
     border-radius: var(--rl-radius);
+}
+
+.rl__actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    padding: 0 0 10px;
+}
+
+.rl__action {
+    flex: 0 1 auto;
+}
+
+/* 删除按钮与收藏按钮同一套观感，但只在悬停时变红（破坏性动作不该常驻染色） */
+.rl-row__del {
+    flex: 0 0 auto;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 26px;
+    height: 26px;
+    border: none;
+    background: transparent;
+    border-radius: var(--cc-radius-pill, 999px);
+    color: inherit;
+    opacity: 0.45;
+    cursor: pointer;
+    transition: opacity var(--cc-dur-fast, 0.14s) var(--cc-ease, ease),
+                color var(--cc-dur-fast, 0.14s) var(--cc-ease, ease),
+                background-color var(--cc-dur-fast, 0.14s) var(--cc-ease, ease);
+}
+
+.rl-row__del:hover {
+    opacity: 1;
+    color: rgb(var(--v-theme-error));
+    background: rgba(var(--v-theme-error), 0.12);
 }
 
 .rl__summary {

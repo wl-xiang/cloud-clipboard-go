@@ -1,5 +1,6 @@
 import { defineStore } from 'pinia';
 import { DEFAULT_DISPLAY, DISPLAY_TOGGLES, LEGACY_STORAGE_KEYS } from '@/data/displayToggles';
+import { DEFAULT_LAYOUT, DEFAULT_VIEW, LAYOUT_KEYS, VIEW_KEYS } from '@/data/workspace';
 import { MODES } from '@/views/modes/registry';
 import { readLocationParam } from '@/util.js';
 
@@ -82,6 +83,14 @@ export const useAppStore = defineStore('app', {
             text: '',
             files: [],
         },
+        // 平台级认证状态，由 /server 的 globalAuth / authorized 填充（见 store/websocket.js 的
+        // fetchServerInfo）。**不是显示开关**，别塞进 displayByMode —— 那是纯布尔偏好，
+        // 这个是服务端下发的安全状态。
+        //   globalAuth ：「整个平台要不要密码」（只由 server.auth 决定）
+        //   authorized ：「这次请求有没有通过」
+        // 两者同时为「要密码 + 没通过」时才锁全屏（见 App.vue 的 auth-gate）。
+        globalAuth: false,
+        authorized: true,
         received: [],
         roomMessagesCache: {},
         isRoomSyncing: false,
@@ -95,6 +104,16 @@ export const useAppStore = defineStore('app', {
         // 关掉「分享弹窗」开关后，建链接直接用这里的值。
         shareDefaults: loadShareDefaults(),
         composerPrimary: localStorage.getItem('composerPrimary') || 'text',
+        // 标准模式的两组视图偏好。跟 composerPrimary 同一种存法：**纯 localStorage**、
+        // 不进地址栏 —— 它们不像 uiMode 那样需要「一个 tab 一个」（换布局不改变你看到的内容，
+        // 只改变排布），塞进 URL 只会让链接变长、还多出「别人打开我的链接看到错布局」的困扰。
+        // 坏值一律回落到出厂默认：读 localStorage 的地方都得这么防。
+        homeLayout: LAYOUT_KEYS.includes(localStorage.getItem('homeLayout'))
+            ? localStorage.getItem('homeLayout')
+            : DEFAULT_LAYOUT,
+        historyView: VIEW_KEYS.includes(localStorage.getItem('historyView'))
+            ? localStorage.getItem('historyView')
+            : DEFAULT_VIEW,
         fullscreenSendClose: localStorage.getItem('fullscreenSendClose') !== null
             ? localStorage.getItem('fullscreenSendClose') === 'true'
             : true,
@@ -117,9 +136,31 @@ export const useAppStore = defineStore('app', {
         setConfig(config) {
             this.config = config;
         },
+        setAuthState({ globalAuth, authorized }) {
+            if (typeof globalAuth === 'boolean') this.globalAuth = globalAuth;
+            if (typeof authorized === 'boolean') this.authorized = authorized;
+        },
+        // 深浅色切换收在这里：原来只有输入区底部那一个按钮会用，
+        // 现在它搬到了工作区条上，默认模式里也要有同样的能力 ——
+        // 逻辑留一份，别在两个组件里各写一遍 `app.dark = app.useDark ? …`。
+        toggleDark() {
+            this.dark = this.useDark ? 'disable' : 'enable';
+        },
         toggleComposerPrimary() {
             this.composerPrimary = this.composerPrimary === 'files' ? 'text' : 'files';
             localStorage.setItem('composerPrimary', this.composerPrimary);
+        },
+        // 非法值直接忽略（而不是存下来）：一份坏值的来源只可能是手改 localStorage 或旧版本残留，
+        // 落到 state 里会让整个工作区渲染成未定义的排布。守卫放在 action 里，消费点不用各自防。
+        setHomeLayout(layout) {
+            if (!LAYOUT_KEYS.includes(layout)) return;
+            this.homeLayout = layout;
+            localStorage.setItem('homeLayout', layout);
+        },
+        setHistoryView(view) {
+            if (!VIEW_KEYS.includes(view)) return;
+            this.historyView = view;
+            localStorage.setItem('historyView', view);
         },
         toggleFullscreenSendClose() {
             this.fullscreenSendClose = !this.fullscreenSendClose;

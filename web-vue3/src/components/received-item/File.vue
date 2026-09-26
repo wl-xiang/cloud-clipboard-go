@@ -32,6 +32,13 @@ const props = defineProps({
         type: Object,
         default: () => ({}),
     },
+    // 宫格展示时卡片会被压到 ~300px 宽（见 DefaultMode 的 .timeline-panel__stream--grid）。
+    // 一行里的「缩略图 + 标题 + 5 个操作图标」在那么窄的宽度里塞不下 ——
+    // 结果是标题被压成竖排（一个字一行）。所以宫格里要换一套排布：操作图标另起一行。
+    grid: {
+        type: Boolean,
+        default: false,
+    },
 });
 const app = useAppStore();
 const ws = useWebSocketStore();
@@ -226,7 +233,7 @@ function deviceIcon(type) {
 
 <template>
     <v-hover v-slot="{ isHovering, props }">
-        <v-card :elevation="isHovering ? 10 : 2" v-bind="props" class="timeline-card timeline-card--file timeline-card--id-float mb-3 transition-swing" :class="{ 'timeline-card--dark': isDark }">
+        <v-card :elevation="isHovering ? 10 : 2" v-bind="props" class="timeline-card timeline-card--file timeline-card--id-float mb-3 transition-swing cc-lift" :class="{ 'timeline-card--dark': isDark, 'timeline-card--grid': grid }">
             <div v-if="meta.id" class="text-caption text-grey-darken-1 timeline-card__id-float">
                 <v-icon size="x-small" class="mr-1">{{ mdiPound }}</v-icon>{{ meta.id }}
             </div>
@@ -244,7 +251,7 @@ function deviceIcon(type) {
                     </template>
                 </div>
 
-                <div class="d-flex flex-row align-center flex-nowrap">
+                <div class="d-flex flex-row align-center flex-nowrap timeline-card__file-row">
                     <v-img
                         v-if="meta.thumbnail && (!isPreviewableVideo && !isPreviewableAudio)"
                         :src="meta.thumbnail"
@@ -403,6 +410,58 @@ function deviceIcon(type) {
     display: block;
     height: 4px;
     background: linear-gradient(90deg, #10b981, #06b6d4);
+}
+
+/* ── 宫格变体 ─────────────────────────────────────────────────
+   宫格里每格只有 ~300px，「缩略图 + 标题 + 5 个操作图标」一行塞不下：
+   标题会被压成一个字一行（实测）。这里改成两行 ——
+   第一行图 + 文，操作图标整排换到第二行。 */
+.timeline-card--grid .timeline-card__file-row {
+    /* Vuetify 的 .flex-nowrap 带 !important，不写 !important 压不住 */
+    flex-wrap: wrap !important;
+    align-items: flex-start;
+    row-gap: 4px;
+}
+
+.timeline-card--grid .timeline-card__title {
+    /* 名称是最有信息量的字段，窄格里宁可占两行也不要一个字一行 */
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+    /* ⚠️ 必须 !important：这个标题挂着 Vuetify 的 .text-truncate，
+       那条规则的 white-space 是 !important。 */
+    white-space: normal !important;
+    word-break: break-all;
+    font-size: 1rem;
+    margin-bottom: 0.25rem;
+}
+
+.timeline-card--grid .timeline-card__file-meta {
+    /* 体积 | 过期时间 在窄格里折行，不要横着撑破卡片 */
+    white-space: normal;
+}
+
+.timeline-card--grid .timeline-card__preview-actions {
+    /* 整排图标独占一行、右对齐 */
+    flex-basis: 100%;
+    justify-content: flex-end;
+    margin-left: 0;
+}
+
+.timeline-card--grid .timeline-card__meta {
+    flex-wrap: wrap;
+    row-gap: 2px;
+}
+
+.timeline-card--grid :deep(.v-card-text) {
+    padding: 12px 14px 12px;
+}
+
+/* 宫格里的展开预览不能太高 —— 一格撑到 480px 会把整行拉垮 */
+.timeline-card--grid :deep(.v-expand-transition) img,
+.timeline-card--grid :deep(.v-expand-transition) video {
+    max-height: 200px !important;
 }
 
 .timeline-card__meta {

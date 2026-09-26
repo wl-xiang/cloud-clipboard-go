@@ -5,7 +5,7 @@ import { useWebSocketStore } from '@/store/websocket';
 import { useTheme } from 'vuetify';
 import { useI18n } from 'vue-i18n';
 import { toast } from '@/plugins/toast';
-import { SHARE_DEFAULT_TTL, copyTextToClipboard, createShareLink, deviceLabel, errorMessage, formatTimestamp, getClientId, isAutomationMessage, isImageName, isLateMessage, looksLikeMarkdown, prefersRenderedView, renderMarkdownHtml, prettyFileSize } from '@/util.js';
+import { SHARE_DEFAULT_TTL, copyTextToClipboard, createShareLink, deviceLabel, errorMessage, formatTimestamp, getClientId, isImageName, looksLikeMarkdown, prefersRenderedView, renderMarkdownHtml, prettyFileSize } from '@/util.js';
 import PageToolbar from '@/components/PageToolbar.vue';
 import StickyComposer from '@/components/sticky/StickyComposer.vue';
 import ShareLinkButton from '@/components/ShareLinkButton.vue';
@@ -176,16 +176,6 @@ const bubbleFooter = (item) => {
         parts.push(shortTime(item));
     }
     parts.push(item.type === 'text' ? t('chatTypeText') : t('chatTypeFile'));
-    // 定时消息的来源标记。和上面那个类型标签同理，**不归 app.display 那几个开关管** ——
-    // 它标的是「这条不是人发的」，属于结构信息，不是可选展示的元信息。
-    // 判定在 util.js（单点，那边有完整说明）。
-    if (isAutomationMessage(item)) {
-        parts.push(t('automationSource'));
-    }
-    // 补发：正文按原定时刻算、timestamp 是实际发送时刻，标出来免得用户以为内容坏了。
-    if (isLateMessage(item)) {
-        parts.push(t('automationLate'));
-    }
     if (isOwnBubble(item)) {
         parts.push(t('chatSynced'));
     }
@@ -514,8 +504,14 @@ watch(detailItem, (item) => {
 </template>
 
 <style scoped>
+/* ⚠️ 页面底色**刻意留空**（继承全局背景）。
+   这里原来是一层不透明的品牌色（#f6f7fa / #15171c），后果有两个：
+     1. 它盖住了全局的极光底 —— 同一个「深色模式」在标准模式下和在这个模式下
+        是两种完全不同的底色，来回切就像换了套皮肤（用户报的「切换样式显示很奇怪」）；
+     2. 它要求和主题**各写一份**，两份里漏一份就会在深色下露出一块浅色。
+   模式的身份交给面板 / 强调色表达，背景一律由 theme.css 的 --cc-bg + 极光统一管。 */
 .chat-wall {
-    background: #f6f7fa;
+    background: transparent;
     height: 100vh;
     height: 100dvh;
     display: flex;
@@ -526,7 +522,7 @@ watch(detailItem, (item) => {
 }
 
 .chat-wall--dark {
-    background: #15171c;
+    background: transparent;
     color: #e7eaf0;
 }
 

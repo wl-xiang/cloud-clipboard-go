@@ -1,0 +1,266 @@
+/* ─────────────────────────────────────────────────────────────
+   全局设计令牌 + 毛玻璃 / 动效基座
+   ─────────────────────────────────────────────────────────────
+   为什么单独一个文件、而不是分散在组件里：
+     · 圆角、阴影、毛玻璃、动效时长这几组值**每个组件都要用**，
+       抄六份必然漂移（之前就是：22px / 18px / 20px / 24px 四种圆角混用）。
+     · 深浅两套值只在**声明处**分叉一次（下面 :root 与 .v-theme--dark 各一份），
+       消费点只写 var(--cc-*)，不用各组件再写一遍 `--dark` 分支。
+   ⚠️ 这个文件必须在 `vuetify/styles` **之后**加载，否则同权重的 .v-card 规则
+      会被 Vuetify 自己的盖掉（见 main.js 里的摆放位置，别往上挪）。
+   ───────────────────────────────────────────────────────────── */
+
+:root {
+    /* ── 圆角：一档到底，只用这五个值 ── */
+    --cc-radius-xl: 28px;   /* 大面板 / 输入区外壳 */
+    --cc-radius-lg: 22px;   /* 卡片 / 弹窗 */
+    --cc-radius-md: 16px;   /* 内层块 / 输入框 */
+    --cc-radius-sm: 12px;   /* 小控件 */
+    --cc-radius-pill: 999px;
+
+    /* ── 间距与尺寸 ── */
+    --cc-gap: 8px;
+    /* 工作区四周的统一留白。**上下左右用同一个值** —— 之前左右是 px-3/px-md-5
+       （16/24px）、上下却只有 padding-top 8px，卡片贴得比左右紧，看着像没对齐。 */
+    --cc-gutter: 16px;
+    /* 面板与面板之间的间距（工作区条 ↔ 输入区 / 输入区 ↔ 历史面板 / 左栏 ↔ 右栏）。
+       **所有 Panel 之间用同一个值** —— 之前左右布局里「工作区条到输入区」是 8px、
+       「左栏到右栏」却是 16px，三种间距混用，整版看起来松紧不一。 */
+    --cc-panel-gap: 12px;
+    /* 内外框之间的**统一内缩**。两个值对应两种嵌套：
+       · --cc-frame-inset    装饰性双框（输入区外壳 ↔ 输入区卡片）
+       · --cc-frame-inset-lg 面板内容区（历史面板 ↔ 首条卡片）
+       为什么必须统一：内缩四边不等时，内框圆角**不可能**与外框同心 ——
+       同心要求 内R = 外R − 内缩，而上下内缩和左右内缩不同就没有解。
+       （曾经 composer-dock 是 px-md-4(16px) + py-2(8px)：左右 16、上下 8，
+         两个框还都写 28px 圆角 —— 看着就是「内外 R 角不平行」。） */
+    --cc-frame-inset: 8px;
+    --cc-frame-inset-lg: 12px;
+    /* 内框同心圆角：外R − 内缩。消费点直接用它，别各自算一遍。 */
+    --cc-radius-frame-inner: calc(var(--cc-radius-xl, 28px) - var(--cc-frame-inset, 8px));
+    /* 顶部工具栏实测高度（PageToolbar 的 padding 8+8 + 内容 ~35 + 1px 描边）。
+       输入区粘顶时要让开它，否则会被压在工具栏底下（见 DefaultMode）。 */
+    --cc-toolbar-h: 52px;
+    /* 高频图标按钮的点击区。40 是「手指够得着」的常用下限，
+       原来 density="compact" 的图标按钮只有 28~32px，手机上很难点。 */
+    --cc-touch: 40px;
+    --cc-touch-lg: 46px;    /* 发送这类主动作再大一档 */
+
+    /* ── 动效 ── */
+    --cc-ease: cubic-bezier(0.22, 0.61, 0.36, 1);
+    --cc-ease-spring: cubic-bezier(0.34, 1.4, 0.5, 1);
+    --cc-dur-fast: 0.14s;
+    --cc-dur: 0.22s;
+    --cc-dur-slow: 0.36s;
+
+    /* ── 毛玻璃（浅色） ── */
+    --cc-glass-blur: 18px;
+    --cc-glass-saturate: 165%;
+    --cc-glass-bg: rgba(255, 255, 255, 0.66);
+    --cc-glass-bg-strong: rgba(255, 255, 255, 0.78);
+    --cc-glass-bg-solid: rgba(255, 255, 255, 0.94);
+    --cc-glass-border: rgba(148, 163, 184, 0.26);
+    --cc-glass-highlight: rgba(255, 255, 255, 0.7);
+
+    /* ── 文本 ── */
+    --cc-text: rgba(15, 23, 42, 0.94);
+    --cc-text-muted: rgba(71, 85, 105, 0.78);
+
+    /* ── 阴影：三级，够用且一致 ── */
+    --cc-shadow-1: 0 2px 10px rgba(15, 23, 42, 0.06);
+    --cc-shadow-2: 0 10px 26px rgba(15, 23, 42, 0.09);
+    --cc-shadow-3: 0 20px 44px rgba(15, 23, 42, 0.14);
+    --cc-shadow-hover: 0 18px 38px rgba(15, 23, 42, 0.16);
+    /* 「浮在内容之上」的一档：聊天式布局里粘底的输入区用它，
+       要和背后的历史消息拉开距离，普通卡片阴影不够。 */
+    --cc-shadow-float: 0 18px 48px rgba(15, 23, 42, 0.22), 0 2px 8px rgba(15, 23, 42, 0.10);
+
+    /* ── 页面底：一层柔和的极光，让毛玻璃真的「有东西可透」 ──
+       纯色底上的 backdrop-filter 看不出效果（透过去还是同一块纯色），
+       所以背景必须有明暗过渡，毛玻璃才有意义。 */
+    --cc-aurora: radial-gradient(1100px 620px at 12% -8%, rgba(56, 152, 236, 0.34), transparent 62%),
+                 radial-gradient(900px 560px at 88% 4%, rgba(109, 122, 246, 0.30), transparent 60%),
+                 radial-gradient(800px 620px at 50% 108%, rgba(20, 184, 166, 0.24), transparent 62%);
+    /* 底色刻意比面板深一档：面板是近白的玻璃，页面是带色的底 ——
+       两者明度差不够时边界会糊成一片（"背景色跟前景按钮同一个颜色"就是这个观感）。 */
+    --cc-bg: #e4eaf5;
+}
+
+/* 深色：只覆盖「值」，键名一个不新增 —— 消费点不需要知道自己在哪个主题下。
+   ⚠️ 选择器必须**带上 html.cc-dark**。Vuetify 的 `.v-theme--dark` 挂在 #app 里层的
+   .v-application 上，而 html / body 在它外面 —— 只写 .v-theme--dark 的话，
+   `html, body { background: var(--cc-bg) }` 永远解析到浅色值，
+   表现就是「面板深色、页面底色还是浅色」（这就是之前那个「深色不跟随」的 bug）。
+   cc-dark 由 App.vue 的 applyDarkMode() 同步挂在 documentElement 上。 */
+html.cc-dark,
+.v-theme--dark {
+    --cc-glass-bg: rgba(30, 41, 59, 0.62);
+    --cc-glass-bg-strong: rgba(26, 36, 54, 0.80);
+    --cc-glass-bg-solid: rgba(20, 29, 45, 0.96);
+    --cc-glass-border: rgba(148, 163, 184, 0.24);
+    --cc-glass-highlight: rgba(226, 232, 240, 0.14);
+    --cc-glass-blur: 20px;
+
+    --cc-text: rgba(226, 232, 240, 0.95);
+    --cc-text-muted: rgba(148, 163, 184, 0.88);
+
+    --cc-shadow-1: 0 2px 10px rgba(2, 6, 23, 0.42);
+    --cc-shadow-2: 0 12px 30px rgba(2, 6, 23, 0.5);
+    --cc-shadow-3: 0 24px 50px rgba(2, 6, 23, 0.6);
+    --cc-shadow-hover: 0 20px 42px rgba(2, 6, 23, 0.62);
+    --cc-shadow-float: 0 22px 56px rgba(0, 0, 0, 0.72), 0 2px 10px rgba(0, 0, 0, 0.5);
+
+    --cc-aurora: radial-gradient(1100px 620px at 12% -8%, rgba(37, 99, 235, 0.34), transparent 62%),
+                 radial-gradient(900px 560px at 88% 4%, rgba(109, 40, 217, 0.34), transparent 60%),
+                 radial-gradient(800px 620px at 50% 108%, rgba(13, 148, 136, 0.26), transparent 62%);
+    --cc-bg: #070c16;
+}
+
+/* ── 页面底色：极光渐变，铺在 <html> 上 ───────────────────────────
+   为什么挂在 html 而不是 body::before：
+     · `body::before { z-index: -1 }` 会被 **body 自己的底色盖住**（负 z-index 的
+       后代在 body 背景之下绘制），极光等于白画；
+     · 挂 html 还顺带解决了「深色不跟随」——html 上的令牌能被 html.cc-dark 直接改掉。
+   `background-attachment: fixed` 让极光锚在视口上，滚动的面板从它上面滑过，
+   毛玻璃才有稳定的透过层。 */
+html {
+    background-color: var(--cc-bg);
+    background-image: var(--cc-aurora);
+    background-repeat: no-repeat;
+    background-attachment: fixed;
+    background-size: cover;
+}
+
+body {
+    background: transparent;
+}
+
+/* ── 全局毛玻璃基类：需要「玻璃感」的容器挂上它即可 ── */
+.cc-glass {
+    background: var(--cc-glass-bg) !important;
+    backdrop-filter: blur(var(--cc-glass-blur)) saturate(var(--cc-glass-saturate));
+    -webkit-backdrop-filter: blur(var(--cc-glass-blur)) saturate(var(--cc-glass-saturate));
+    border: 1px solid var(--cc-glass-border) !important;
+}
+
+/* ── 卡片统一：大圆角 + 一致阴影 ──
+   ⚠️ 用 `:where()` 把权重压到 0，这样任何组件里更具体的规则都能照常覆盖它
+      （例如弹窗、侧栏各自的特例），统一不等于锁死。 */
+:where(.v-card) {
+    border-radius: var(--cc-radius-lg);
+}
+
+:where(.v-card:not(.v-card--flat)) {
+    box-shadow: var(--cc-shadow-2);
+}
+
+/* ── 按钮圆角统一 ──
+   Vuetify 默认 4px，跟卡片 22~28px 的圆角完全不是一套语言。
+   两个例外（都不该被这条改）：
+     · 图标按钮：自带 50% 圆形；
+     · 任何显式写了 `rounded="…"` 的：那一层意图更强（胶囊、方形），不该被抢。
+   ⚠️ 这里**不能**用 `:where()`：那会把权重压成 0，直接被 Vuetify 自己的
+      `.v-btn { border-radius: 4px }` 盖掉 —— 规则写了等于没写。 */
+.v-btn:not(.v-btn--icon):not([class*="rounded"]) {
+    border-radius: var(--cc-radius-sm, 12px);
+}
+
+/* ── 弹窗：跟卡片同一套玻璃与阴影 ──
+   只认 `.v-dialog` 的**直接内容卡片**，避免把弹窗内部有色卡片（奖励二维码、
+   传统色卡之类）也刷成半透明。 */
+.v-dialog > .v-overlay__content > .v-card {
+    background: var(--cc-glass-bg-solid) !important;
+    backdrop-filter: blur(var(--cc-glass-blur)) saturate(var(--cc-glass-saturate));
+    -webkit-backdrop-filter: blur(var(--cc-glass-blur)) saturate(var(--cc-glass-saturate));
+    border: 1px solid var(--cc-glass-border);
+}
+
+/* 弹窗内的标题栏与内容区不再各带一层底色，玻璃才透得出来 */
+.v-dialog > .v-overlay__content > .v-card > .v-card-title,
+.v-dialog > .v-overlay__content > .v-card > .v-card-text,
+.v-dialog > .v-overlay__content > .v-card > .v-toolbar {
+    background: transparent !important;
+}
+
+/* ── 提示条（snackbar） ── */
+.v-snackbar__wrapper {
+    border-radius: var(--cc-radius-md);
+    backdrop-filter: blur(var(--cc-glass-blur)) saturate(var(--cc-glass-saturate));
+    -webkit-backdrop-filter: blur(var(--cc-glass-blur)) saturate(var(--cc-glass-saturate));
+    box-shadow: var(--cc-shadow-3);
+}
+
+/* ── 高频图标按钮放大 ──
+   复制 / 下载 / 删除 / 分享这一排是全站点击密度最高的控件，
+   原来 28~32px 的点击区在手机上基本点不准。
+   ⚠️ 只放大「卡片里那排」和「工具栏」的图标按钮，不动弹窗里的（那里要紧凑）。 */
+.timeline-card .v-btn--icon.v-btn--density-compact,
+.cc-icon-action {
+    min-width: var(--cc-touch);
+    min-height: var(--cc-touch);
+    width: var(--cc-touch);
+    height: var(--cc-touch);
+}
+
+.timeline-card .v-btn--icon.v-btn--density-compact .v-icon,
+.cc-icon-action .v-icon {
+    font-size: 22px !important;
+    opacity: 1;
+}
+
+/* ── 交互动效：悬停微抬 + 按下回弹 ──
+   只挂给明确标了 class 的元素，不给全局按钮加 transform ——
+   全局加会让整条工具栏在鼠标划过时抖成一片。 */
+.cc-lift {
+    transition: transform var(--cc-dur) var(--cc-ease),
+                box-shadow var(--cc-dur) var(--cc-ease);
+    will-change: transform;
+}
+
+.cc-lift:hover {
+    transform: translateY(-2px);
+    box-shadow: var(--cc-shadow-hover);
+}
+
+.cc-lift:active {
+    transform: translateY(0) scale(0.995);
+}
+
+.cc-press {
+    transition: transform var(--cc-dur-fast) var(--cc-ease),
+                background-color var(--cc-dur-fast) var(--cc-ease),
+                color var(--cc-dur-fast) var(--cc-ease);
+}
+
+.cc-press:active {
+    transform: scale(0.94);
+}
+
+/* ── 入场动画 ── */
+@keyframes cc-fade-up {
+    from { opacity: 0; transform: translateY(8px); }
+    to   { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes cc-pop-in {
+    0%   { opacity: 0; transform: scale(0.94); }
+    100% { opacity: 1; transform: scale(1); }
+}
+
+.cc-anim-in {
+    animation: cc-fade-up var(--cc-dur-slow) var(--cc-ease) both;
+}
+
+/* 尊重系统「减少动态效果」设置：把动画压到最短，但**不删**（delete 会改变布局语义） */
+@media (prefers-reduced-motion: reduce) {
+    .cc-anim-in,
+    .cc-lift,
+    .cc-press {
+        animation-duration: 0.01ms !important;
+        transition-duration: 0.01ms !important;
+    }
+
+    .cc-lift:hover {
+        transform: none;
+    }
+}

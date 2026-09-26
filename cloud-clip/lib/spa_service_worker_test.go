@@ -113,35 +113,6 @@ func TestSpaServiceWorkerDenylistHasNoTypo(t *testing.T) {
 	}
 }
 
-// TestEmbeddedSpaCarriesAutomationEntry 内嵌的 SPA（cloud-clip/lib/static）必须带上自动化入口。
-//
-// 为什么值得一条测试：正式构建走的是 `-tags embed`，用的是 `lib/static`，
-// 而前端改完只在 `web-vue3/dist` 里 —— 要显式跑 `DEPLOY_STATIC=1 npm run build` 才会同步过去。
-// 这个「忘了同步」是无症状的：`go build -tags embed` 完全成功，跑起来也正常，
-// 只是界面永远停在上一版。用户遇到的现象是「SPA 里根本没有这个功能」，而代码明明写好了。
-func TestEmbeddedSpaCarriesAutomationEntry(t *testing.T) {
-	indexPath := filepath.Join("static", "index.html")
-	raw, err := os.ReadFile(indexPath)
-	if err != nil {
-		t.Skipf("读不到 %s，跳过: %v", indexPath, err)
-	}
-
-	entry := regexp.MustCompile(`/assets/index-[A-Za-z0-9_-]+\.js`).FindString(string(raw))
-	if entry == "" {
-		t.Fatalf("%s 里找不到入口 bundle", indexPath)
-	}
-	js, err := os.ReadFile(filepath.Join("static", strings.TrimPrefix(entry, "/")))
-	if err != nil {
-		// 产物可能是「未压缩 + .gz/.br」的形态，读不到就跳过，不误报
-		t.Skipf("读不到内嵌产物 %s: %v", entry, err)
-	}
-	if !strings.Contains(string(js), "/automation") {
-		t.Errorf("内嵌 SPA（cloud-clip/lib/static）里没有自动化入口 —— 用 `-tags embed` 构建出来的界面" +
-			"会完全看不到这个功能，而 go build 不会报任何错。\n" +
-			"  修法：在 web-vue3 里跑 `DEPLOY_STATIC=1 npm run build`（VitePWA 的 dist 会拷进 lib/static）。")
-	}
-}
-
 // swDenylistSources 从 vite.config.js 里抠出 navigateFallbackDenylist 的正则字面量。
 //
 // 不引 JS 解析器（为一个配置项不值当），只做够用的解析：截出中括号之间的部分，

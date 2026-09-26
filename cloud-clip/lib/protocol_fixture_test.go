@@ -91,22 +91,6 @@ func protocolFixtures() map[string]any {
 		ReceiveBase: ReceiveBase{ID: 1, Type: "text"},
 	}
 
-	// 定时任务发的消息：source / scheduledAt / late / column 全上。
-	automation := TextReceive{
-		ReceiveBase: ReceiveBase{
-			ID:          9,
-			Type:        "text",
-			Room:        "work",
-			Timestamp:   1758700200,
-			SenderIP:    "127.0.0.1",
-			Column:      "doing",
-			Source:      "automation",
-			ScheduledAt: 1758700000,
-			Late:        true,
-		},
-		Content: "每日提醒",
-	}
-
 	// 看板挪列过的文件条目：column 在两个分支上都要能序列化。
 	fileWithColumn := sampleFileReceive()
 	fileWithColumn.Column = "done"
@@ -135,7 +119,6 @@ func protocolFixtures() map[string]any {
 		"device_meta_no_name":     DeviceMeta{ID: "dev-2", Type: "Mobile", Device: "iPhone", OS: "iOS 17", Browser: "Safari"},
 		"text_receive":            sampleTextReceive(),
 		"text_receive_min":        minimal,
-		"text_receive_auto":       automation,
 		"text_receive_disconnect": disconnect,
 		"text_receive_nil_device": nilSenderDevice,
 		"file_receive":            sampleFileReceive(),

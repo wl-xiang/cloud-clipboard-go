@@ -2,7 +2,7 @@
 CONFIG_FILE='/app/server-node/config.json'
 DOMAIN_RECORD_FILE='/app/server-node/data/domain_record.txt'
 ROOM_AUTH_JSON_VALUE="${ROOM_AUTH_JSON:-${ROOM_AUTH:-}}"
-AUTH_JSON_VALUE="${AUTH_PASSWORD:-false}"
+AUTH_JSON_VALUE="${AUTH_PASSWORD:-root1234}"
 
 if [ -z "${ROOM_AUTH_JSON_VALUE}" ]; then
     ROOM_AUTH_JSON_VALUE='{}'
@@ -109,21 +109,22 @@ cat>"${CONFIG_FILE}"<<EOF
         "prefix": "${PREFIX}",
         "key": "${KEY}",
         "cert": "${CERT}",
-        "history": ${MESSAGE_NUM:-10},
+        "history": ${MESSAGE_NUM:-100},
         "auth": ${AUTH_JSON_VALUE},
         "roomAuth": ${ROOM_AUTH_JSON_VALUE},
         "historyFile": "/app/server-node/data/history.json",
         "storageDir": "/app/server-node/data/",
-        "roomList": ${ROOM_LIST:-false},
-        "roomCleanup": 3600
+        "roomList": ${ROOM_LIST:-true},
+        "roomCleanup": 3600,
+        "roomManagePassword": "${ROOM_MANAGE_PASSWORD:-newroom123}"
     },
     "text": {
-        "limit": ${TEXT_LIMIT:-4096}
+        "limit": ${TEXT_LIMIT:-9000}
     },
     "file": {
         "expire": ${FILE_EXPIRE:-3600},
         "chunk": 1048576,
-        "limit": ${FILE_LIMIT:-104857600}
+        "limit": ${FILE_LIMIT:-1073741824}
     }
 }
 EOF

@@ -41,13 +41,6 @@ const placeholder = computed(() => {
     if (props.variant === 'board') {
         return withSendHint(t('composerSlashHint'));
     }
-    // 巨幕用中性那句：它的输入框也不是「写一张便签」。
-    if (props.variant === 'mega') {
-        return withSendHint(t('composerPlaceholder'));
-    }
-    if (props.variant === 'terminal') {
-        return withSendHint(t('terminalPlaceholder'));
-    }
     if (props.variant === 'workbench') {
         return withSendHint(t('workbenchInputHint'));
     }
@@ -345,21 +338,7 @@ async function sendAll() {
             ></textarea>
 <template v-if="canSend">
             <button
-                v-if="props.variant === 'mega'"
-                type="button"
-                class="sticky-composer__go sticky-composer__go--mega"
-                :disabled="sendDisabled"
-                @click="sendAll"
-            >{{ t('send') }}</button>
-            <button
-                v-else-if="props.variant === 'terminal'"
-                type="button"
-                class="sticky-composer__go sticky-composer__go--terminal"
-                :disabled="sendDisabled"
-                @click="sendAll"
-            >{{ t('terminalEnter') }}</button>
-            <button
-                v-else-if="props.variant === 'workbench'"
+                v-if="props.variant === 'workbench'"
                 type="button"
                 class="sticky-composer__go sticky-composer__go--workbench"
                 :disabled="sendDisabled"
@@ -523,99 +502,6 @@ async function sendAll() {
 .sticky-composer__go:disabled {
     opacity: 0.55;
     cursor: not-allowed;
-}
-
-.sticky-composer__go--mega {
-    background: #111827;
-    color: #fff;
-    border-radius: 10px;
-    font-size: 13px;
-    padding: 7px 18px;
-    font-weight: 700;
-}
-
-.sticky-composer--mega {
-    background: #fff;
-    border: 1px solid #e8ebf0;
-    border-radius: 14px;
-    padding: 12px 15px;
-    box-shadow: none;
-}
-
-.sticky-composer--mega .sticky-composer__row {
-    gap: 10px;
-}
-
-.sticky-composer--mega .sticky-composer__attach {
-    font-size: 16px;
-    color: #aab2bd;
-}
-
-.sticky-composer--mega .sticky-composer__area {
-    font-size: 13px;
-    color: #1f2937;
-    padding: 4px 0;
-}
-
-.sticky-composer--mega .sticky-composer__area::placeholder {
-    color: #c6ccd4;
-}
-
-.sticky-composer--mega .sticky-composer__file {
-    background: #f1f5f9;
-    color: #475569;
-}
-
-.sticky-composer--mega .sticky-composer__progress {
-    color: #1f2937;
-}
-
-.sticky-composer--terminal {
-    background: #161b22;
-    border: 1px solid #30363d;
-    border-radius: 8px;
-    padding: 9px 11px;
-    box-shadow: none;
-    font-family: 'SF Mono', 'Menlo', 'Consolas', monospace;
-}
-
-.sticky-composer--terminal .sticky-composer__row {
-    gap: 8px;
-}
-
-.sticky-composer--terminal .sticky-composer__attach {
-    font-size: 13px;
-    color: #8b949e;
-}
-
-.sticky-composer--terminal .sticky-composer__area {
-    font-family: inherit;
-    font-size: 12px;
-    color: #c9d1d9;
-    padding: 4px 0;
-}
-
-.sticky-composer--terminal .sticky-composer__area::placeholder {
-    color: #6e7681;
-}
-
-.sticky-composer--terminal .sticky-composer__file {
-    background: #21262d;
-    color: #c9d1d9;
-}
-
-.sticky-composer--terminal .sticky-composer__progress {
-    color: #58a6ff;
-}
-
-.sticky-composer__go--terminal {
-    background: #238636;
-    color: #fff;
-    border-radius: 6px;
-    font-size: 11px;
-    padding: 5px 12px;
-    font-weight: 700;
-    font-family: 'SF Mono', 'Menlo', 'Consolas', monospace;
 }
 
 .sticky-composer--workbench {

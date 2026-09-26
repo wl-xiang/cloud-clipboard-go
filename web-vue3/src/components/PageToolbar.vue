@@ -15,7 +15,10 @@ const theme = useTheme();
 const isDark = computed(() => theme.current.value?.dark ?? false);
 const { t } = useI18n();
 
-const toolbarCollapsed = ref(localStorage.getItem('pageToolbarCollapsed') === 'true');
+// 默认**收起**：顶栏是低频设置的集合（房间列表开关 / 模式切换 / 设置），
+// 而高频动作（清空、深浅色）已经搬到工作区条上 —— 默认收起能给内容让出一条 ~52px 的高度。
+// 展开偏好记在 localStorage：展开过一次就一直展开，不会每次刷新都弹出来。
+const toolbarCollapsed = ref(localStorage.getItem('pageToolbarCollapsed') !== 'false');
 
 function toggleToolbar() {
     toolbarCollapsed.value = !toolbarCollapsed.value;
@@ -67,49 +70,11 @@ function setMode(mode) {
     app.setUiMode(mode);
 }
 
-// 定时自动化管理页的入口。
-//
-// ⚠️ **同一个标签页内跳转，不开新窗口**。凭据存在 sessionStorage，而 sessionStorage
-// 是按标签页隔离的 —— 开新标签页等于让用户再登一次，正好把「免二次登录」这件事废掉。
-// 同标签页跳过去则直接可用，浏览器返回键就回到这里（那边也有一个「返回主界面」）。
-const automationUrl = computed(() => {
-    const raw = String(app.config?.server?.prefix || '').trim().replace(/^\/+|\/+$/g, '');
-    const prefix = raw ? `/${raw}` : '';
-    const room = ws.room ? `?room=${encodeURIComponent(ws.room)}` : '';
-    return `${prefix}/automation${room}`;
-});
-
-// 这个入口**按服务端的能力声明显示**，不能无条件渲染。
-//
-// ⚠️ Cloudflare Worker 部署里根本没有这一族接口（`/tasks`、`/automation` 都不存在，
-// `/server` 也不下发 `automation`）。无条件渲染的话，点下去会被 Worker 末尾那条
-// `router.all('*', handleFallback)` 当成 SPA 导航兜底掉 —— 用户看到的是
-// 「点了定时任务、回到了首页」，和当初被 Service Worker 吞掉那次是同一种症状
-// （那次是 denylist 漏了，见 vite.config.js 里那段注释）。
-//
-// ⚠️ 判 `=== true` 而不是 `!== false`：`app.config` 要等一次 /server 往返才有，
-// 在此之前 `automation` 是 undefined。这里按「未知就先不显示」处理 ——
-// 代价是工具栏这一格晚一拍出现（和 chip 上那把锁是同一个窗口），
-// 而反过来（未知先显示）会在 Worker 部署下先露出一个点了没用的按钮。
-//
-// 服务端那边 `automation.enabled` 由 `AutomationCapability` 下发（lib/handler.go），
-// 它同时受全局开关 `automation.enabled` 约束 —— 所以配置里关掉之后这个图标也会消失。
-const automationEnabled = computed(() => app.config?.automation?.enabled === true);
-
 const currentMode = computed(() => MODES.find(mode => mode.key === app.uiMode) || MODES[0]);
 
-// 下拉菜单分两组：正常模式在上，「即将下架」的折到分割线下面。
-//
-// ⚠️ 判断只读 registry 里的 `deprecated` 字段，**别在这里写死一份 key 列表** ——
-// 个性化面板（App.vue）读的是同一个字段，写死两份迟早会漂。
-const activeModes = computed(() => MODES.filter((mode) => !mode.deprecated));
-const deprecatedModes = computed(() => MODES.filter((mode) => mode.deprecated));
-
-// 「即将下架」那一组的投票入口。
-//
-// 为什么放在这个菜单里、而不是设置页或关于页：会点开这个分组的人，正是**还在用这几个模式的人**
-// —— 他们才是该被问的人。放到别处，看到问卷的是另一批（根本没用过这些模式的）用户。
-const DEPRECATED_VOTE_URL = 'https://wj.qq.com/s2/28003735/h3fa/';
+// 模式下拉框直接铺开整份 MODES：巨型与终端已下架删除，聊天和工作台回到常驻，
+// 「即将下架」分组与配套的投票入口一并移除 —— 没有待下架的模式了，留着空分组只会碍事。
+const modes = computed(() => MODES);
 </script>
 
 <template>
@@ -153,7 +118,7 @@ const DEPRECATED_VOTE_URL = 'https://wj.qq.com/s2/28003735/h3fa/';
                 <v-chip
                     size="small"
                     variant="tonal"
-                    :color="variant === 'sticky' ? 'amber-darken-1' : variant === 'terminal' ? 'success' : 'primary'"
+                    :color="variant === 'sticky' ? 'amber-darken-1' : 'primary'"
                     class="page-toolbar__room"
                     :title="t('showQrCode')"
                     @click="actions.openPageQr && actions.openPageQr()"
@@ -192,7 +157,7 @@ const DEPRECATED_VOTE_URL = 'https://wj.qq.com/s2/28003735/h3fa/';
                     </template>
                     <v-list density="compact" nav>
                         <v-list-item
-                            v-for="mode in activeModes"
+                            v-for="mode in modes"
                             :key="mode.key"
                             :active="app.uiMode === mode.key"
                             @click="setMode(mode.key)"
@@ -202,50 +167,6 @@ const DEPRECATED_VOTE_URL = 'https://wj.qq.com/s2/28003735/h3fa/';
                             </template>
                             <v-list-item-title>{{ t(mode.labelKey) }}</v-list-item-title>
                         </v-list-item>
-
-                        <!-- 即将下架的那几个：**仍然完全可用**，只是不再推荐。
-                             只弱化视觉（文字变灰 + 折到分割线下面），**不拦点击、不弹确认** ——
-                             会点它们的人就是想用一下，弹个框只会打断他，而他并没做错什么。 -->
-                        <template v-if="deprecatedModes.length">
-                            <v-divider class="my-1"></v-divider>
-                            <v-list-subheader class="page-toolbar__mode-deprecated">
-                                {{ t('uiModeDeprecated') }}
-                            </v-list-subheader>
-                            <v-list-item
-                                v-for="mode in deprecatedModes"
-                                :key="mode.key"
-                                :active="app.uiMode === mode.key"
-                                @click="setMode(mode.key)"
-                            >
-                                <template v-slot:prepend>
-                                    <v-icon size="small">{{ mode.icon }}</v-icon>
-                                </template>
-                                <v-list-item-title class="text-medium-emphasis">{{ t(mode.labelKey) }}</v-list-item-title>
-                            </v-list-item>
-
-                            <!-- 投票入口：外链、新窗口打开（别把用户从正在用的界面上带走）。
-                                 ⚠️ rel="noopener noreferrer" 不能省 —— target=_blank 打开的同源页面
-                                 能通过 window.opener 反向操作本页。 -->
-                            <v-list-item
-                                :href="DEPRECATED_VOTE_URL"
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                class="page-toolbar__vote"
-                            >
-                                <template v-slot:prepend>
-                                    <v-icon size="small" color="primary">mdi-vote-outline</v-icon>
-                                </template>
-                                <v-list-item-title class="page-toolbar__vote-title">
-                                    {{ t('uiModeDeprecatedVote') }}
-                                </v-list-item-title>
-                                <v-list-item-subtitle class="page-toolbar__vote-hint">
-                                    {{ t('uiModeDeprecatedVoteHint') }}
-                                </v-list-item-subtitle>
-                                <template v-slot:append>
-                                    <v-icon size="x-small" class="text-medium-emphasis">mdi-open-in-new</v-icon>
-                                </template>
-                            </v-list-item>
-                        </template>
                     </v-list>
                 </v-menu>
 
@@ -271,7 +192,10 @@ const DEPRECATED_VOTE_URL = 'https://wj.qq.com/s2/28003735/h3fa/';
                     </template>
                 </v-tooltip>
 
-                    <v-tooltip :text="t('enterRoom')" location="bottom">
+                    <!-- 「按名称进入」只在**房间列表关闭**时留在这里。
+                         列表开着的时候，它已经在侧栏的动作行里 —— 同一件事摆两个入口
+                         正是「入口混乱」的来源，所以任何时候只留一个。 -->
+                    <v-tooltip v-if="!roomListEnabled" :text="t('enterRoomByName')" location="bottom">
                         <template v-slot:activator="{ props }">
                             <v-btn icon density="compact" size="small" variant="text" v-bind="props" @click="actions.openRoomDialog && actions.openRoomDialog()">
                                 <v-icon size="24">mdi-door-open</v-icon>
@@ -281,38 +205,6 @@ const DEPRECATED_VOTE_URL = 'https://wj.qq.com/s2/28003735/h3fa/';
                 </div>
 
                 <div class="page-toolbar__group">
-                    <v-tooltip :text="t('clearClipboard')" location="bottom">
-                        <template v-slot:activator="{ props }">
-                            <v-btn icon density="compact" size="small" variant="text" class="page-toolbar__clear" v-bind="props" @click="actions.openClearAll && actions.openClearAll()">
-                                <v-icon size="24">mdi-broom</v-icon>
-                            </v-btn>
-                        </template>
-                    </v-tooltip>
-
-                    <v-tooltip v-if="automationEnabled" :text="t('automationEntryHint')" location="bottom">
-                        <template v-slot:activator="{ props }">
-                            <v-btn
-                                icon
-                                density="compact"
-                                size="small"
-                                variant="text"
-                                class="page-toolbar__icon"
-                                v-bind="props"
-                                :href="automationUrl"
-                                :aria-label="t('automationEntry')"
-                            >
-                                <v-icon size="24">mdi-calendar-clock</v-icon>
-                            </v-btn>
-                        </template>
-                    </v-tooltip>
-
-                    <v-tooltip :text="t('settings')" location="bottom">
-                        <template v-slot:activator="{ props }">
-                            <v-btn icon density="compact" size="small" variant="text" v-bind="props" @click="actions.openSettings && actions.openSettings()">
-                                <v-icon size="24">mdi-cog</v-icon>
-                            </v-btn>
-                        </template>
-                    </v-tooltip>
                 </div>
             </div>
         </div>
@@ -334,10 +226,49 @@ const DEPRECATED_VOTE_URL = 'https://wj.qq.com/s2/28003735/h3fa/';
     position: sticky;
     top: 0;
     z-index: 40;
+    /* ── 毛玻璃 ────────────────────────────────────────────────
+       这条栏一直粘在顶上，底下永远是滚动的内容 —— 正是毛玻璃最合适的场景。
+       各模式的底色（下面一组规则）都改成了半透明，blur 才有东西可透。
+       ⚠️ 不给它加圆角：它是通栏，圆角会让内容从角上漏出来。 */
+    backdrop-filter: blur(var(--cc-glass-blur, 18px)) saturate(var(--cc-glass-saturate, 165%));
+    -webkit-backdrop-filter: blur(var(--cc-glass-blur, 18px)) saturate(var(--cc-glass-saturate, 165%));
+    box-shadow: var(--cc-shadow-1, 0 2px 10px rgba(15, 23, 42, 0.06));
+    transition: background-color var(--cc-dur, 0.22s) var(--cc-ease, ease);
 }
 
 .page-toolbar--collapsed .page-toolbar__inner {
     display: none !important;
+}
+
+/* 收起态：顶条整体高度收到 14px，中间留一块「抓手」，点它展开。
+   ⚠️ 必须给一个非零高度 —— 原来收起后这条的高度是 0，把手只剩 4px 的一条缝，
+   在深色底上基本看不见，用户找不到怎么把工具栏叫回来。 */
+.page-toolbar--collapsed {
+    height: 14px;
+    background: transparent;
+    box-shadow: none;
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+}
+
+.page-toolbar--collapsed .page-toolbar__collapse-toggle {
+    top: 0;
+    bottom: auto;
+    width: 72px;
+    height: 14px;
+    border-radius: 0 0 var(--cc-radius-sm, 12px) var(--cc-radius-sm, 12px);
+    background: var(--cc-glass-bg-solid, rgba(255, 255, 255, 0.94));
+    opacity: 0.75;
+}
+
+.page-toolbar--collapsed .page-toolbar__collapse-toggle .v-icon {
+    display: inline-flex;
+    font-size: 15px;
+}
+
+.page-toolbar--collapsed .page-toolbar__collapse-toggle:hover {
+    opacity: 1;
+    width: 96px;
 }
 
 .page-toolbar__collapse-toggle {
@@ -354,7 +285,9 @@ const DEPRECATED_VOTE_URL = 'https://wj.qq.com/s2/28003735/h3fa/';
     opacity: 0.35;
     cursor: pointer;
     padding: 0;
-    transition: opacity 0.15s, width 0.15s;
+    transition: opacity var(--cc-dur-fast, 0.14s) var(--cc-ease, ease),
+                width var(--cc-dur-fast, 0.14s) var(--cc-ease, ease),
+                height var(--cc-dur-fast, 0.14s) var(--cc-ease, ease);
 }
 
 .page-toolbar__collapse-toggle:hover {
@@ -369,66 +302,6 @@ const DEPRECATED_VOTE_URL = 'https://wj.qq.com/s2/28003735/h3fa/';
 .page-toolbar--dark .page-toolbar__collapse-toggle {
     background: currentColor;
     opacity: 0.3;
-}
-
-.page-toolbar--default {
-    background: #f5f7fa;
-    border-bottom: 1px solid rgba(148, 163, 184, 0.18);
-}
-
-.page-toolbar--sticky {
-    background: #f3ead2;
-    border-bottom: 1px solid rgba(120, 90, 40, 0.16);
-}
-
-.page-toolbar--mega {
-    background: #fdfdfb;
-    border-bottom: 1px solid rgba(17, 24, 39, 0.12);
-}
-
-.page-toolbar--terminal {
-    background: #ffffff;
-    border-bottom: 1px solid #d0d7de;
-}
-
-.page-toolbar--dark.page-toolbar--default {
-    background: #1e1e24;
-    border-bottom-color: rgba(148, 163, 184, 0.22);
-}
-
-.page-toolbar--dark.page-toolbar--sticky {
-    background: #211d12;
-    border-bottom-color: rgba(238, 232, 214, 0.12);
-}
-
-.page-toolbar--dark.page-toolbar--mega {
-    background: #101318;
-    border-bottom-color: rgba(255, 255, 255, 0.1);
-}
-
-.page-toolbar--terminal.page-toolbar--dark {
-    background: #0d1117;
-    border-bottom-color: #21262d;
-}
-
-.page-toolbar--workbench {
-    background: #eef0f4;
-    border-bottom: 1px solid rgba(148, 163, 184, 0.18);
-}
-
-.page-toolbar--dark.page-toolbar--workbench {
-    background: #13161c;
-    border-bottom-color: rgba(255, 255, 255, 0.08);
-}
-
-.page-toolbar--chat {
-    background: #f6f7fa;
-    border-bottom: 1px solid rgba(148, 163, 184, 0.18);
-}
-
-.page-toolbar--dark.page-toolbar--chat {
-    background: #15171c;
-    border-bottom-color: rgba(255, 255, 255, 0.08);
 }
 
 .page-toolbar__inner {
@@ -527,37 +400,10 @@ const DEPRECATED_VOTE_URL = 'https://wj.qq.com/s2/28003735/h3fa/';
     color: #90caf9;
 }
 
-/* 清空是这条栏里唯一的破坏性动作，和「设置」长得一模一样不合适。
-   平时不喧哗，悬停才变红。 */
-.page-toolbar__clear:hover :deep(.v-icon) {
-    color: rgb(var(--v-theme-error));
-}
-
 /* 模式触发器。改前是「半透明白底 + 淡边框 + 悬停整块变实心蓝」，两个毛病：
    1) 白底淡边框让它读起来像状态标签，跟左边的房间 chip 撞脸，看不出是个控件；
    2) 悬停直接变实心蓝，跟旁边那几个图标按钮的轻悬停不是一套语言。
    现在跟图标按钮统一：无边框、静止一层中性底色、悬停只加深一点。
-/* 投票入口：一条虚线分隔 + 主色标题，让它在一列灰扑扑的「即将下架」模式名里
-   显得是「另一类东西，而且可点」。 */
-.page-toolbar__vote {
-    margin-top: 2px;
-    border-top: 1px dashed rgba(148, 163, 184, 0.5);
-}
-
-.page-toolbar__vote-title {
-    /* ⚠️ v-list-item-title 默认 nowrap + 省略号 —— 不改成 normal 的话，
-       「这些模式该不该下架」会被截成「这些模式该不…」，那问卷就白放了。 */
-    white-space: normal;
-    font-size: 0.8125rem;
-    color: rgb(var(--v-theme-primary));
-}
-
-.page-toolbar__vote-hint {
-    white-space: normal;
-    font-size: 0.6875rem;
-    line-height: 1.4;
-}
-
 /* 模式选择器。几条取舍（第一版踩过）：
    1) 白底淡边框让它读起来像状态标签，跟左边的房间 chip 撞脸，看不出是个控件；
    2) 悬停直接变实心蓝，跟旁边那几个图标按钮的轻悬停不是一套语言。
@@ -576,11 +422,19 @@ const DEPRECATED_VOTE_URL = 'https://wj.qq.com/s2/28003735/h3fa/';
     font-family: inherit;
     cursor: pointer;
     color: rgba(71, 85, 105, 0.95);
-    transition: background 0.15s, color 0.15s;
+    transition: background var(--cc-dur-fast, 0.14s) var(--cc-ease, ease),
+                color var(--cc-dur-fast, 0.14s) var(--cc-ease, ease),
+                transform var(--cc-dur-fast, 0.14s) var(--cc-ease, ease);
 }
 
 .page-toolbar__mode:hover {
     background: rgba(148, 163, 184, 0.26);
+}
+
+/* 按下去有个回弹：这条栏上所有控件同一种反馈语言（图标按钮由 Vuetify 自己的
+   overlay 表达，这里补的是「动」这一层）。 */
+.page-toolbar__mode:active {
+    transform: scale(0.96);
 }
 
 .page-toolbar--dark .page-toolbar__mode {
@@ -600,6 +454,26 @@ const DEPRECATED_VOTE_URL = 'https://wj.qq.com/s2/28003735/h3fa/';
     .page-toolbar__room {
         flex: 0 1 auto;
         max-width: 100%;
+    }
+}
+
+/* 宽屏把工具栏的图标按钮放大到跟卡片那排一致（40px 上下）。
+   ⚠️ 只在 ≥960px 生效：这条栏是 nowrap 的，窄屏上加尺寸会直接把房间 chip 挤出屏幕
+   （实测 390px 宽下 5 个图标各加 4px 就已经溢出）。 */
+@media (min-width: 960px) {
+    .page-toolbar__inner .v-btn--icon {
+        min-width: var(--cc-touch, 40px);
+        min-height: var(--cc-touch, 40px);
+        border-radius: var(--cc-radius-pill, 999px);
+        transition: transform var(--cc-dur-fast, 0.14s) var(--cc-ease, ease);
+    }
+
+    .page-toolbar__inner .v-btn--icon:active {
+        transform: scale(0.92);
+    }
+
+    .page-toolbar__inner .v-btn--icon :deep(.v-icon) {
+        font-size: 26px;
     }
 }
 </style>

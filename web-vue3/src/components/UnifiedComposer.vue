@@ -8,7 +8,7 @@
         @dragleave.prevent="handleDragLeave"
         @drop.prevent="handleDrop"
     >
-        <div class="unified-composer__body pa-1 pa-md-3">
+        <div class="unified-composer__body">
             <div
                 class="unified-composer__inputs"
                 :class="{ 'unified-composer__inputs--files-first': isFilePrimary }"
@@ -36,7 +36,9 @@
                         variant="solo"
                         flat
                         density="compact"
+                        auto-grow
                         :rows="composerRows"
+                        :max-rows="composerMaxRows"
                         :placeholder="textareaPlaceholder"
                         hide-details
                         class="unified-composer__textarea"
@@ -99,7 +101,7 @@
                 </div>
             </div>
 
-            <div v-if="progress" class="px-1 px-md-3 pb-2">
+            <div v-if="progress" class="unified-composer__progress">
                 <small class="d-block text-right text-medium-emphasis mb-1">
                     {{ prettyFileSize(Math.min(uploadedSize, fileSize)) }} / {{ prettyFileSize(fileSize) }}
                 </small>
@@ -129,78 +131,28 @@
                         </template>
                         <span>{{ t('connectedTotal', { count: deviceTotal }) }}</span>
                     </v-tooltip>
-                    <div v-if="app.display.composerReward" class="unified-composer__footer-reward">
-                        <v-tooltip location="top">
-                            <template v-slot:activator="{ props }">
-                                <v-btn
-                                    icon
-                                    density="comfortable"
-                                    variant="text"
-                                    size="small"
-                                    v-bind="props"
-                                    @click="rewardDialog = true"
-                                >
-                                    <v-icon class="unified-composer__reward-icon">{{ mdiCurrencyCny }}</v-icon>
-                                </v-btn>
-                            </template>
-                            <span>{{ t('reward') }}</span>
-                        </v-tooltip>
-                    </div>
-                    <div class="unified-composer__footer-main">
-                        <v-tooltip v-if="app.display.composerPalette" location="top">
-                            <template v-slot:activator="{ props }">
-                                <v-btn
-                                    icon
-                                    density="comfortable"
-                                    variant="text"
-                                    size="small"
-                                    color="grey-darken-1"
-                                    v-bind="props"
-                                    @click="colorDialog = true"
-                                >
-                                    <v-icon>{{ mdiPaletteSwatch }}</v-icon>
-                                </v-btn>
-                            </template>
-                            <span>{{ t('traditionalColors') }}</span>
-                        </v-tooltip>
-                        <v-tooltip v-if="app.display.composerShortcuts" location="top">
-                            <template v-slot:activator="{ props }">
-                                <v-btn
-                                    icon
-                                    density="comfortable"
-                                    variant="text"
-                                    size="small"
-                                    color="grey-darken-1"
-                                    v-bind="props"
-                                    @click="shortcutsDialog = true"
-                                >
-                                    <v-icon>{{ mdiFlash }}</v-icon>
-                                </v-btn>
-                            </template>
-                            <span>{{ t('shortcuts') }}</span>
-                        </v-tooltip>
-                        <v-tooltip v-if="app.display.composerTheme" location="top">
-                            <template v-slot:activator="{ props }">
-                                <v-btn
-                                    icon
-                                    density="comfortable"
-                                    variant="text"
-                                    size="small"
-                                    color="grey-darken-1"
-                                    v-bind="props"
-                                    @click="toggleDark"
-                                >
-                                    <v-icon>{{ isDark ? mdiWhiteBalanceSunny : mdiWeatherNight }}</v-icon>
-                                </v-btn>
-                            </template>
-                            <span>{{ t('toggleDarkMode') }}</span>
-                        </v-tooltip>
-                    </div>
+                    <v-tooltip v-if="app.display.composerPalette" location="top">
+                        <template v-slot:activator="{ props }">
+                            <v-btn
+                                icon
+                                density="comfortable"
+                                variant="text"
+                                size="small"
+                                color="grey-darken-1"
+                                v-bind="props"
+                                @click="colorDialog = true"
+                            >
+                                <v-icon>{{ mdiPaletteSwatch }}</v-icon>
+                            </v-btn>
+                        </template>
+                        <span>{{ t('traditionalColors') }}</span>
+                    </v-tooltip>
                 </div>
 
                 <v-btn
                     variant="flat"
                     color="primary"
+                    rounded="pill"
                     class="unified-composer__send"
                     :disabled="sendDisabled"
                     @click="sendAll"
@@ -315,63 +267,8 @@
         </v-card>
     </v-dialog>
 
-    <v-dialog v-model="rewardDialog" max-width="420">
-        <v-card>
-            <v-card-title class="text-h6 d-flex align-center">
-                <v-icon class="mr-2 unified-composer__reward-icon">{{ mdiCurrencyCny }}</v-icon>
-                {{ t('rewardTitle') }}
-                <v-spacer></v-spacer>
-                <v-btn icon density="comfortable" variant="text" size="small" @click="rewardDialog = false">
-                    <v-icon>{{ mdiClose }}</v-icon>
-                </v-btn>
-            </v-card-title>
-            <v-divider></v-divider>
-            <v-card-text class="text-center pa-4">
-                <div class="text-body-2 font-weight-medium unified-composer__reward-section-title mb-2">{{ t('supportSectionTitle') }}</div>
-                <v-row class="unified-composer__reward-row" dense>
-                    <v-col class="text-center">
-                        <div class="unified-composer__reward-label">微信</div>
-                        <img src="/reward-wechat.png" alt="WeChat Reward QR" class="unified-composer__reward-qr" />
-                    </v-col>
-                    <v-col class="text-center">
-                        <div class="unified-composer__reward-label">支付宝</div>
-                        <img src="/reward-alipay.png" alt="Alipay Reward QR" class="unified-composer__reward-qr" />
-                    </v-col>
-                </v-row>
-                <div class="text-body-2 text-medium-emphasis mt-3 unified-composer__warm-text">{{ t('rewardHint') }}</div>
-                <v-btn class="mt-3" color="#ff5f5f" variant="tonal" block
-                       href="https://ko-fi.com/jonnyan404"
-                       target="_blank" rel="noopener">
-                    <v-icon start>{{ mdiCoffee }}</v-icon>
-                    <span>Buy Me a Coffee</span>
-                    <v-icon end size="16">{{ mdiOpenInNew }}</v-icon>
-                </v-btn>
-                <v-divider class="my-4"></v-divider>
-                <div class="unified-composer__warm-box">
-                    <div class="text-body-2 text-medium-emphasis unified-composer__warm-text">{{ t('cloudPromoHint') }}</div>
-                    <div class="d-flex flex-column ga-2 mt-3">
-                    <v-btn variant="outlined" color="primary"
-                           href="https://cloud.tencent.com/act/cps/redirect?redirect=6150&cps_key=0b1dfaf9bb573dac05abef76202dc8cc&from=console"
-                           target="_blank" rel="noopener" block>
-                        <v-icon start>{{ mdiCurrencyCny }}</v-icon>
-                        腾讯云 2C2G ¥99/年
-                        <v-icon end size="16">{{ mdiOpenInNew }}</v-icon>
-                    </v-btn>
-                    <v-btn variant="outlined" color="primary"
-                           href="https://www.aliyun.com/daily-act/ecs/activity_selection?userCode=79h2wrag"
-                           target="_blank" rel="noopener" block>
-                        <v-icon start>{{ mdiCurrencyCny }}</v-icon>
-                        阿里云 2C2G ¥99/年
-                        <v-icon end size="16">{{ mdiOpenInNew }}</v-icon>
-                    </v-btn>
-                    </div>
-                </div>
-            </v-card-text>
-        </v-card>
-    </v-dialog>
 
     <traditional-color-dialog v-model="colorDialog"></traditional-color-dialog>
-    <shortcuts-dialog v-model="shortcutsDialog"></shortcuts-dialog>
 </template>
 
 <script setup>import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue';
@@ -386,20 +283,13 @@ import { errorMessage, prettyFileSize } from '@/util.js';
 import TraditionalColorDialog from '@/components/TraditionalColorDialog.vue';
 import ComposerSlashMenu from '@/components/ComposerSlashMenu.vue';
 import { SLASH_TEMPLATES, resolveSlashText, slashMenuShouldOpen, slashMenuShouldStay, slashPendingAt, stripTrailingSlash } from '@/slash-template.js';
-import ShortcutsDialog from '@/components/ShortcutsDialog.vue';
 
 const mdiPalette = 'mdi-palette';
 const mdiPaletteSwatch = 'mdi-palette-swatch';
-const mdiFlash = 'mdi-flash';
 const mdiSend = 'mdi-send';
 const mdiLaptop = 'mdi-laptop';
 const mdiCellphone = 'mdi-cellphone';
 const mdiDevices = 'mdi-devices';
-const mdiCurrencyCny = 'mdi-currency-cny';
-const mdiCoffee = 'mdi-coffee';
-const mdiOpenInNew = 'mdi-open-in-new';
-const mdiWhiteBalanceSunny = 'mdi-white-balance-sunny';
-const mdiWeatherNight = 'mdi-weather-night';
 const mdiClose = 'mdi-close';
 const mdiAndroid = 'mdi-android';
 const mdiApple = 'mdi-apple';
@@ -423,11 +313,17 @@ const isDark = computed(() => theme.current.value?.dark ?? false);
 const { t } = useI18n();
 const { mobile } = useDisplay();
 const isFilePrimary = computed(() => app.composerPrimary === 'files');
+// 输入框起始行数 / 最多长到几行。
+//
+// 为什么要有 `max-rows`：文本上限已放宽到 9000，一屏贴进来的多行文本会很长。
+// 让输入框跟着内容长（auto-grow）是好的 —— 否则「支持换行」这个能力看不见；
+// 但**必须封顶**，否则它会一路长到把同一张卡片底部的发送按钮顶出视口，
+// 那正是「发送按钮被隐藏」的成因。
+// 封顶后超出部分在框内滚动；同时卡片整体还有视口上限兜底（见 .unified-composer）。
 const composerRows = computed(() => isFilePrimary.value ? 1 : 3);
+const composerMaxRows = computed(() => isFilePrimary.value ? 3 : 8);
 const deviceDialog = ref(false);
-const rewardDialog = ref(false);
 const colorDialog = ref(false);
-const shortcutsDialog = ref(false);
 const textFullscreen = ref(false);
 function toggleTextFullscreen() {
     textFullscreen.value = !textFullscreen.value;
@@ -458,9 +354,6 @@ function deviceTypeLabel(item) {
 }
 function goDeviceList() {
     deviceDialog.value = true;
-}
-function toggleDark() {
-    app.dark = app.useDark ? 'disable' : 'enable';
 }
 defineExpose({ focus, openFilePicker });
 const progress = ref(false);
@@ -707,29 +600,45 @@ onBeforeUnmount(() => {
 
 <style scoped>
 .unified-composer {
-    border-radius: 22px;
-    border-color: rgba(148, 163, 184, 0.22) !important;
-    box-shadow: 0 10px 28px rgba(15, 23, 42, 0.06);
-    background: rgba(255, 255, 255, 0.96);
-    transition: background-color 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease;
+    /* 圆角与高度都可被外层覆写：输入区外壳包着它时要用**同心**圆角（外R − 内缩）、
+       并在左右布局下**铺满**外壳的高度。
+       走 CSS 变量继承而不是外层 :deep() —— Vuetify 组件的根元素**不带**父组件的
+       scoped 属性，:deep() 那条选择器根本匹配不上（实测踩过）；而变量继承不走 scope。 */
+    border-radius: var(--cc-composer-radius, var(--cc-radius-xl, 28px));
+    height: var(--cc-composer-height, auto);
+    border: 1px solid var(--cc-glass-border, rgba(148, 163, 184, 0.26)) !important;
+    box-shadow: var(--cc-shadow-2, 0 10px 26px rgba(15, 23, 42, 0.09));
+    background: var(--cc-glass-bg-strong, rgba(255, 255, 255, 0.78));
+    backdrop-filter: blur(var(--cc-glass-blur, 18px)) saturate(var(--cc-glass-saturate, 165%));
+    -webkit-backdrop-filter: blur(var(--cc-glass-blur, 18px)) saturate(var(--cc-glass-saturate, 165%));
+    transition: background-color var(--cc-dur, 0.22s) var(--cc-ease, ease),
+                border-color var(--cc-dur, 0.22s) var(--cc-ease, ease),
+                box-shadow var(--cc-dur, 0.22s) var(--cc-ease, ease);
     display: flex;
     flex-direction: column;
-    max-height: calc(100vh - 6.5rem);
-    max-height: calc(100dvh - 6.5rem);
+    /* ★ 发送按钮「始终可见」的第一道（也是主）保证 ──────────────────────
+       卡片最高只能到「视口 − 工具栏 − 上下留白」。发送按钮是卡片里
+       flex-shrink:0 的最后一行，卡片既然装得进视口，它就必然在视口内。
+       原来这里是 calc(100dvh - 6.5rem)：既没让开顶部工具栏，又假设正文区
+       一定能被压缩 —— 输入框一长（auto-grow / 多行 / 附件），卡片底就翻出视口。 */
+    max-height: var(--cc-composer-max-height, calc(100dvh - var(--cc-toolbar-h, 52px) - 3 * var(--cc-gap, 8px)));
     min-height: 0;
+    /* Vuetify 的 .v-card 自带 overflow:hidden，会把下面 footer 的
+       position:sticky 与阴影一起裁掉（sticky 需要祖先不裁剪才能生效）。
+       正文区自己带 overflow-y:auto，裁剪交给它，这一层放开。 */
+    overflow: visible;
 }
 
 @media (max-width: 1263px) {
     .unified-composer {
-        max-height: calc(100vh - 4.5rem);
-        max-height: calc(100dvh - 4.5rem);
+        max-height: var(--cc-composer-max-height, calc(100dvh - var(--cc-toolbar-h, 52px) - 2 * var(--cc-gap, 8px)));
     }
 }
 
 .unified-composer--dark {
-    border-color: rgba(71, 85, 105, 0.72) !important;
-    box-shadow: 0 18px 36px rgba(2, 6, 23, 0.3);
-    background: rgba(15, 23, 42, 0.94);
+    border-color: var(--cc-glass-border, rgba(71, 85, 105, 0.72)) !important;
+    box-shadow: var(--cc-shadow-2, 0 12px 30px rgba(2, 6, 23, 0.5));
+    background: var(--cc-glass-bg-strong, rgba(15, 23, 42, 0.76));
 }
 
 .unified-composer--dragover {
@@ -741,15 +650,19 @@ onBeforeUnmount(() => {
     pointer-events: none;
 }
 
-.unified-composer__textarea :deep(.v-input__slot) {
+/* ⚠️ 选择器是 `.v-field`（Vuetify 3），不是 `.v-input__slot`（那是 Vuetify 2 的名字）。
+   这里原来写的是 v2 的名字，规则从来没生效过 —— 表现为输入框没有圆角底、也没有内边距。 */
+.unified-composer__textarea :deep(.v-field) {
     box-shadow: none !important;
-    border-radius: 16px;
-    background: rgba(248, 250, 252, 0.95) !important;
+    /* 同心圆角：卡片圆角 − 正文区内缩。链条：外壳 28 → 卡片 20 → 输入框 12，
+       每一级都内缩 --cc-frame-inset(8px)，三级 R 角互相平行。 */
+    border-radius: calc(var(--cc-composer-radius, var(--cc-radius-xl, 28px)) - var(--cc-frame-inset, 8px));
+    background: rgba(248, 250, 252, 0.7) !important;
     padding: 0.25rem 0.25rem 0 0.25rem;
 }
 
-.unified-composer--dark .unified-composer__textarea :deep(.v-input__slot) {
-    background: rgba(30, 41, 59, 0.96) !important;
+.unified-composer--dark .unified-composer__textarea :deep(.v-field) {
+    background: rgba(30, 41, 59, 0.6) !important;
 }
 
 .unified-composer--dark .unified-composer__textarea :deep(textarea),
@@ -758,17 +671,18 @@ onBeforeUnmount(() => {
     color: rgba(226, 232, 240, 0.92) !important;
 }
 
+/* 高度**不再由 CSS 定死**：交给 Vuetify 的 auto-grow + max-rows。
+   以前这里写死 height:80px，和 auto-grow 是两套互相打架的高度来源
+   （auto-grow 走 rows 属性，CSS 走 height，谁在后谁赢），
+   所以只保留「不许用户手动拖拽」和「超出上限就在框内滚动」这两条。 */
 .unified-composer__textarea :deep(textarea) {
     resize: none;
-    height: 80px;
-    max-height: 40vh;
     overflow-y: auto;
+    overscroll-behavior: contain;
 }
 
 .unified-composer__textarea--secondary :deep(textarea) {
     resize: none;
-    height: 42px;
-    max-height: 6rem;
 }
 
 .unified-composer__textblock {
@@ -826,6 +740,29 @@ onBeforeUnmount(() => {
 .unified-composer__inputs {
     display: flex;
     flex-direction: column;
+    flex: var(--cc-composer-inputs-flex, 0 1 auto);
+    min-height: var(--cc-composer-inputs-min, 0);
+}
+
+/* ── 左右布局下的高度分配 ──────────────────────────────────────────
+   外壳给了确定高度时，把多余的空间分给**输入框**，让「写字的地方」真的变大，
+   而不是空着一片。
+   ⚠️ 全部走 **CSS 变量 + flex**，不用 `height: 100%`：
+     · 百分比高度只认确定值，中间任何一层断了它就解析成 auto（实测踩过）；
+     · 变量继承不走 scope、不看组件层级 —— Vuetify 组件的根元素不带父组件的
+       scoped 属性，类穿透（class fallthrough）在多层组件上也不可靠（实测踩过）。
+   默认值 = 现状（不伸展），所以不在左右布局时行为完全不变。 */
+.unified-composer__textblock {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    flex: var(--cc-composer-textblock-flex, 0 1 auto);
+    min-height: var(--cc-composer-textblock-min, 0);
+}
+
+.unified-composer__textarea {
+    flex: var(--cc-composer-textarea-flex, 0 1 auto);
+    min-height: var(--cc-composer-textarea-min, 0);
 }
 
 .unified-composer__inputs--files-first .unified-composer__textblock {
@@ -842,6 +779,11 @@ onBeforeUnmount(() => {
 
 .unified-composer__textarea--secondary {
     max-height: 3.5rem;
+}
+
+
+.unified-composer__progress {
+    padding: 0 var(--cc-frame-inset, 8px) var(--cc-frame-inset, 8px);
 }
 
 .unified-composer__divider {
@@ -885,7 +827,7 @@ onBeforeUnmount(() => {
     align-items: center;
     justify-content: center;
     border: 1px dashed rgba(148, 163, 184, 0.55);
-    border-radius: 16px;
+    border-radius: calc(var(--cc-composer-radius, var(--cc-radius-xl, 28px)) - var(--cc-frame-inset, 8px));
     color: rgba(100, 116, 139, 0.95);
     cursor: pointer;
     min-height: 2.5rem;
@@ -916,46 +858,57 @@ onBeforeUnmount(() => {
 .unified-composer__body {
     flex: 1 1 auto;
     min-height: 0;
-    overflow: hidden;
+    /* 纵向 flex：__inputs 在左右布局下靠 flex:1 吃掉剩余高度（见上面的高度分配段） */
+    display: flex;
+    flex-direction: column;
+    /* 纵向 flex：__inputs 在左右布局下靠 flex:1 吃掉剩余高度（见上面的高度分配段） */
+    display: flex;
+    flex-direction: column;
+    /* 统一内缩（四边同一个值）。原来是 Vuetify 的 `pa-1 pa-md-3`：窄屏 4px、
+       宽屏 12px，而**上下**还额外被分区分隔线切走一截 —— 内外圆角没法同心。 */
+    padding: var(--cc-frame-inset, 8px);
+    /* 正文超出卡片上限时**在这里内部滚动**，而不是被裁掉。
+       footer 是它的兄弟节点（不在这个滚动盒里），所以滚正文不会带走发送按钮。 */
+    overflow-y: auto;
+    overscroll-behavior: contain;
 }
 
 .unified-composer__footer {
+    /* ★ 发送按钮「始终可见」的第二道保险 ──────────────────────────────
+       底部操作栏自己粘在视口底。卡片装得进视口时它本来就在视口内（不触发 sticky）；
+       万一 dvh 不被支持、或某天卡片的上限被改坏，它也会钉在视口底边不跟着内容跑。
+       背景必须**不透明**：否则滚动时底下正文会从按钮后面透出来。 */
+    position: sticky;
+    bottom: 0;
+    z-index: 3;
     flex-shrink: 0;
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+    /* ⚠️ 这里**不能**用 `grid-template-columns: ... auto ...`。
+       左右布局下输入区只有 ~420px 宽，而 960px 那个断点是按**视口**算的、
+       对窄容器不生效 —— 三列 grid 会把中间那排图标挤到容器外，
+       最右边那个（深浅色切换）直接被裁掉，看起来就是「按钮不见了」。
+       换成会换行的 flex：放不下就换行，一个都不会丢。 */
+    display: flex;
+    flex-wrap: wrap;
     align-items: center;
-    gap: 0.75rem;
-    border-top: 1px solid rgba(226, 232, 240, 0.9);
-    padding: 0.25rem 0.25rem 0.25rem 0.25rem;
+    /* 图标靠左、发送按钮贴右（`margin-inline-start: auto`）。
+       原来整体居中 —— 发送键是全屏里最该被「定位到」的按钮，
+       居中会让它随图标数量左右漂移，永远停在同一个地方才点得准。 */
+    justify-content: flex-start;
+    gap: 0.35rem 0.5rem;
+    border-top: 1px solid var(--cc-glass-border, rgba(226, 232, 240, 0.9));
+    border-radius: 0 0 calc(var(--cc-composer-radius, var(--cc-radius-xl, 28px)) - 1px) calc(var(--cc-composer-radius, var(--cc-radius-xl, 28px)) - 1px);
+    background: var(--cc-glass-bg-solid, rgba(255, 255, 255, 0.94));
+    backdrop-filter: blur(var(--cc-glass-blur, 18px)) saturate(var(--cc-glass-saturate, 165%));
+    -webkit-backdrop-filter: blur(var(--cc-glass-blur, 18px)) saturate(var(--cc-glass-saturate, 165%));
+    padding: 0.25rem;
 }
 
 .unified-composer__footer-icons {
-    grid-column: 2;
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
     justify-content: center;
     gap: 0.15rem 0.5rem;
-    min-width: 0;
-}
-
-@media (min-width: 960px) {
-    .unified-composer__footer {
-        padding: 0.75rem;
-        padding-top: 0.5rem;
-    }
-}
-
-.unified-composer--dark .unified-composer__footer {
-    border-top-color: rgba(71, 85, 105, 0.72);
-}
-
-.unified-composer__footer-main {
-    min-width: 0;
-}
-
-.unified-composer__footer-reward {
-    display: flex;
-    justify-content: center;
     min-width: 0;
 }
 
@@ -977,87 +930,45 @@ onBeforeUnmount(() => {
     align-items: center;
 }
 
-.unified-composer__shortcut {
-    white-space: nowrap;
-}
-
-.unified-composer__reward-icon {
-    color: #f5b301;
-    animation: unified-composer-reward-shine 2s ease-in-out infinite;
-}
-
-@keyframes unified-composer-reward-shine {
-    0%, 100% {
-        filter: brightness(1);
-        text-shadow: 0 0 0 rgba(245, 179, 1, 0);
-    }
-    50% {
-        filter: brightness(1.45);
-        text-shadow: 0 0 6px rgba(245, 179, 1, 0.85);
-    }
-}
-
-.unified-composer__reward-row {
-    justify-content: center;
-}
-
-.unified-composer__reward-label {
-    font-size: 12px;
-    color: rgba(0, 0, 0, 0.6);
-    margin-bottom: 4px;
-}
-
-.unified-composer__reward-qr {
-    max-width: 150px;
-    width: 100%;
-    height: 150px;
-    object-fit: contain;
-    border-radius: 8px;
-}
-
-.unified-composer__warm-text {
-    white-space: pre-line;
-    line-height: 1.7;
-}
-
-.unified-composer__warm-box {
-    background: rgba(99, 102, 241, 0.06);
-    border: 1px solid rgba(148, 163, 184, 0.25);
-    border-radius: 10px;
-    padding: 0.75rem 1rem;
-}
-
-.unified-composer__reward-section-title {
-    color: #f5b301;
-}
-
 .unified-composer__send {
-    justify-self: end;
+    /* 贴右：把左边图标排剩下的空间都吃掉 */
+    margin-inline-start: auto;
     flex-shrink: 0;
     white-space: nowrap;
+    /* 发送是全站点击密度最高的按钮，给足点击区（原来 ~36px 偏小） */
+    min-height: var(--cc-touch-lg, 46px);
+    min-width: 104px;
+    padding-inline: 20px;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    box-shadow: var(--cc-shadow-1, 0 2px 10px rgba(15, 23, 42, 0.06));
+    transition: transform var(--cc-dur, 0.22s) var(--cc-ease, ease),
+                box-shadow var(--cc-dur, 0.22s) var(--cc-ease, ease);
+}
+
+.unified-composer__send:not(:disabled):hover {
+    transform: translateY(-1px);
+    box-shadow: var(--cc-shadow-2, 0 10px 26px rgba(15, 23, 42, 0.09));
+}
+
+.unified-composer__send:not(:disabled):active {
+    transform: translateY(0) scale(0.97);
+}
+
+/* 底部那排小图标（设备 / 配色 / 快捷键 / 主题）也放到能点准的尺寸。
+   它们和发送按钮同处一条栏，一大一小会显得没对齐。 */
+.unified-composer__footer .v-btn--icon.v-btn--size-small,
+.unified-composer__footer .v-btn--icon.v-btn--density-comfortable {
+    min-width: var(--cc-touch, 40px);
+    min-height: var(--cc-touch, 40px);
+    border-radius: var(--cc-radius-pill, 999px);
+}
+
+.unified-composer__footer .v-btn--icon .v-icon {
+    font-size: 22px;
 }
 
 @media (max-width: 960px) {
-    .unified-composer__footer {
-        display: flex;
-        flex-wrap: wrap;
-        align-items: flex-start;
-        gap: 0.5rem 0.75rem;
-    }
-
-    .unified-composer__footer-icons {
-        flex: 1 1 auto;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        gap: 0.15rem 0.5rem;
-        min-width: 0;
-    }
-
-    .unified-composer__footer-reward {
-        justify-content: flex-start;
-    }
-
     .unified-composer__send {
         flex: 1 0 100%;
         justify-content: center;

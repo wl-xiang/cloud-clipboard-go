@@ -1,7 +1,11 @@
 import axios from 'axios';
 import { marked } from 'marked';
 import DOMPurify from 'dompurify';
-import { APP_BASE_URL } from '@/base.js';
+// ⚠️ 这里必须用**相对路径**，不要改成 `@/base.js`：
+// `scripts/check-display-semantics.mjs` 是纯 Node 跑的（不经 vite），它直接 import 本文件，
+// 认不出 `@` 这个 vite 别名 —— 一旦换成别名，那个契约脚本会因为
+// ERR_MODULE_NOT_FOUND 直接崩掉，等于把一道跨文件约定的护栏静默拆了。
+import { APP_BASE_URL } from './base.js';
 
 export function prettyFileSize(size) {
     let units = ['TB', 'GB', 'MB', 'KB'];
@@ -317,46 +321,6 @@ export function deviceLabel(senderDevice, fallback = '') {
     return senderDevice.name || senderDevice.os || senderDevice.type || fallback;
 }
 
-/**
- * 这条消息是不是**定时任务**发的。
- *
- * 服务端在 `deliverMessage` 里给定时投递的消息打上 `source: 'automation'`
- * （见 lib/broadcast.go 的 messageSource），人发的消息该字段为空。
- *
- * ⚠️ 判定**只写这一处**。各模式的呈现方式不同（卡片 / 气泡 / 便签 / 看板），
- * 但「是不是定时消息」必须是同一个答案 —— 散着写迟早会漂开，
- * 表现就是「同一个房间，这个模式标了、那个模式没标」。
- *
- * ⚠️ 定时消息默认**不进房间历史**（`keepHistory: false`，见 task.go 的论证），
- * 所以它只存在于实时广播里：刷新页面之后就看不到了。**别把它当成「消息丢了」**，
- * 也别指望在历史记录里翻到它。
- */
-export function isAutomationMessage(meta) {
-    return meta?.source === 'automation';
-}
-
-/**
- * 这条定时消息是不是「错过触发窗口后补发」的。
- *
- * 服务端只在超出补发窗口（`automation.graceSeconds`，默认 600s）时才置 `late`。
- * 界面要把它标出来，因为**它的时间看起来是错的**：消息上的 timestamp 是实际发送时刻，
- * 而正文里的日期是按**原定时刻**渲染的（见 scheduler.go 的 executeAutomationTask）——
- * 不标一下，用户会觉得「这条消息的内容和时间对不上，是坏的」。
- */
-export function isLateMessage(meta) {
-    return Boolean(meta?.late);
-}
-
-/**
- * 从 axios 错误里取出「给人看」的文案。
- *
- * 服务端统一返回 { code, error, message }：message 是中文人话，error 是英文人话。
- * 优先用 message，退回 error。老服务端或反向代理（Cloudflare 502 之类）返回的可能是
- * 纯文本甚至 HTML，那就截断后原样兜出来 —— 总比只显示一句泛化的「失败」强。
- *
- * 之前的写法是直接读 data.msg，而服务端从来不返回 msg 字段，所以这段逻辑一直是死的，
- * 前端永远只显示泛化提示。
- */
 export function errorMessage(error) {
     const data = error?.response?.data;
     if (!data) return '';
@@ -587,7 +551,7 @@ export function toggleTaskListItem(text, index) {
 }
 
 // 文件名是不是图片。**全站唯一实现** —— 之前这段正则在 6 个地方各抄了一份
-// （StickyNote 两处、ChatWall / MegaWall / TerminalWall / WorkbenchWall 各一处），
+// （便签卡片、聊天气泡、各模式墙等处各一份），
 // 再加一份就是第 7 份，改一处必漏其余。判型只看扩展名，不看内容：
 // 服务端不嗅探、客户端也不该嗅探，两边同一套标准。
 const IMAGE_NAME_RE = /\.(png|jpe?g|gif|webp|svg|bmp|ico|avif)$/i;
@@ -598,8 +562,8 @@ export function isImageName(name) {
 // 文件条目「能不能就地预览、该按哪一类渲染」—— **全站唯一实现**。
 //
 // 为什么收进这里：这三条正则（视频 / 音频 / 文本类文件）本来在 7 个文件里各抄了一份
-// （received-item/File、sticky/StickyNote、glance/GlancePreview、ChatWall / MegaWall /
-// TerminalWall / WorkbenchWall），而且**已经漂移**：那几个模式墙「挑渲染分支」的 helper 认
+// （文件卡片、便签、速览预览、各模式墙），而且**已经漂移**：那几个模式墙
+// 「挑渲染分支」的 helper 认
 // `.mov`，而它们自己的 `isPreviewableVideo` 不认 —— 同一个文件在弹窗里是视频播放器、
 // 在卡片上却退回图标。同一份 `isImageName` 当年也是抄了 6 份才收进来的，别再抄第 8 份。
 //

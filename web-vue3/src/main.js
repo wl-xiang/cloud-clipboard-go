@@ -5,6 +5,10 @@ import axios from 'axios';
 import App from './App.vue';
 import router from './router';
 import vuetify from './plugins/vuetify';
+// ⚠️ 必须排在 `./plugins/vuetify` **之后**：那个模块内部 import 了 `vuetify/styles`，
+// 而本文里 :where(.v-card) 这类规则和 Vuetify 同权重，靠**源码顺序**决胜负。
+// 挪到上面去，卡片圆角/阴影的统一会被 Vuetify 自己的样式静默盖掉。
+import './styles/theme.css';
 import i18n from './vue-i18n';
 import pinia from './store';
 import { APP_BASE_URL } from './base.js';

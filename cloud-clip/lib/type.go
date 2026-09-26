@@ -93,13 +93,6 @@ type ClipboardServer struct {
 	shareLogMutex    sync.Mutex
 	shareVisitDedupe map[string]int64 // "jti|访客" -> 上次上报时间，防刷计数
 
-	// 定时自动化任务（tasks.json）。范式与 shareLog 一致：懒加载 + 整份原子写。
-	// automationTasks 的读写一律在 automationMutex 内，见 task.go。
-	automationTasks  []*AutomationTask `json:"-"`
-	automationMutex  sync.Mutex        `json:"-"`
-	automationLoaded bool              `json:"-"`
-	automationStop   chan struct{}     `json:"-"`
-
 	// 前端静态资源的来源：嵌入式 FS 或外部目录（nil = 这次部署没有前端）。
 	// 发资源、`/s/<token>` 注入 OG、前端路由兜底都要从这里读外壳 index.html，见 spa_shell.go。
 	staticFS fs.FS `json:"-"`
@@ -108,6 +101,12 @@ type ClipboardServer struct {
 	roomStats         map[string]*RoomStat `json:"-"` // 房间统计信息，不序列化
 	roomStatsMutex    sync.RWMutex         `json:"-"` // 房间统计读写锁
 	roomCleanupTicker *time.Ticker         `json:"-"` // 房间清理定时器
+
+	// 用户自建房间的注册表（rooms.json）。和 roomStats 的区别：
+	//   roomStats  统计「运行时出现过什么房间」，空房间会被自动清理，没有密码概念；
+	//   roomRegistry 是**用户显式创建**的房间，带密码、要用户自己删，不会被自动清理。
+	// 见 room_registry.go。
+	roomRegistry *roomRegistry `json:"-"`
 
 	// 局域网延迟统计（WebSocket ping/pong RTT）
 	latency *latencyTracker `json:"-"`
@@ -178,15 +177,6 @@ type ReceiveBase struct {
 	// 不是另一份数据，所以字段挂在条目自己身上，不另建表。见 handleContentColumn。
 	Column string `json:"column,omitempty"`
 
-	// Source 标记这条消息不是人发的 —— 目前只有 "automation"（定时任务）。
-	// 前端可据此加个角标，也可据此过滤：定时消息默认**不占房间历史额度**
-	// （见 deliverMessage 的 keepHistory），但实时广播照发。
-	Source string `json:"source,omitempty"`
-	// ScheduledAt 是定时任务的**预定触发时刻**（Unix 秒）。补发时它与 Timestamp
-	// 相差较大 —— 这是判断「这条是错过后补发的」的唯一依据。
-	ScheduledAt int64 `json:"scheduledAt,omitempty"`
-	// Late 标记这是一条错过触发窗口后补发的消息。
-	Late bool `json:"late,omitempty"`
 }
 
 // "text" type item in Receive[]
@@ -227,6 +217,17 @@ type RoomInfo struct {
 	LastActive   int64  `json:"lastActive"`   // 最后活跃时间（Unix时间戳）
 	IsActive     bool   `json:"isActive"`     // 是否活跃（有设备连接）
 	IsProtected  bool   `json:"isProtected"`  // 是否为受保护房间
+	// IsDefault 公共房间（内部键 default、界面显示为空名字）。
+	// 它**不允许删除** —— 前端据此不渲染删除入口，服务端也会再拦一道。
+	IsDefault bool `json:"isDefault"`
+	// CanManage 当前请求方能不能删这个房间（持有该房间密码，或持有平台管理员凭据）。
+	//
+	// ⚠️ 这**只是给界面用的提示**，不是权限边界 —— 真正的边界在 handleRoomItem 里，
+	// 它会重新校验一次。前端隐藏按钮，服务端仍然要拦（UI 隐藏 ≠ 权限）。
+	CanManage bool `json:"canManage"`
+	// CreatedAt 自建房间的创建时间（Unix 时间戳）；非自建房间为 0。
+	// 列表里用它表达「这个房间是谁什么时候建的」，也方便人工识别「无用的房间」。
+	CreatedAt int64 `json:"createdAt"`
 }
 
 // RoomListResponse 房间列表响应结构体

@@ -281,8 +281,14 @@ async function deleteItem(item) {
 </template>
 
 <style scoped>
+/* ⚠️ 页面底色**刻意留空**（继承全局背景）。
+   这里原来是一层不透明的品牌色（#f4f6fb / #0f172a），后果有两个：
+     1. 它盖住了全局的极光底 —— 同一个「深色模式」在标准模式下和在这个模式下
+        是两种完全不同的底色，来回切就像换了套皮肤（用户报的「切换样式显示很奇怪」）；
+     2. 它要求和主题**各写一份**，两份里漏一份就会在深色下露出一块浅色。
+   模式的身份交给面板 / 强调色表达，背景一律由 theme.css 的 --cc-bg + 极光统一管。 */
 .board-wall {
-    background: #f4f6fb;
+    background: transparent;
     height: 100vh;
     height: 100dvh;
     display: flex;
@@ -296,7 +302,7 @@ async function deleteItem(item) {
 }
 
 .board-wall--dark {
-    background: #0f172a;
+    background: transparent;
     color: #e2e8f0;
     --board-panel-bg: rgba(15, 23, 42, 0.9);
     --board-hairline: rgba(71, 85, 105, 0.6);
@@ -476,7 +482,9 @@ async function deleteItem(item) {
 }
 
 .board-wall__reader--dark {
-    background: #0f172a;
+    /* 这是**面板**不是页面底：页面底统一成透明之后它不能跟着透明，
+       否则深色下阅读区会和背景糊在一起。用全局玻璃令牌保持「一块面板」的观感。 */
+    background: var(--cc-glass-bg-solid, rgba(20, 29, 45, 0.96));
     color: #e2e8f0;
     border-color: rgba(71, 85, 105, 0.6);
 }

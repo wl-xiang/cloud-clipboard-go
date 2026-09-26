@@ -67,9 +67,10 @@
 | 💾 **灵活存储** | 支持配置历史记录和文件过期时间 |
 | 🚀 **轻量高效** | 资源占用少，即使在低配设备也能流畅运行 |
 | 🔍 **快捷指令** | Android/iOS 快捷指令支持 |
-| 🎨 **九种界面模式** | 时间流、速览、动作台、便签、看板等，每种模式的显示设置可以单独配置；地址里的 `?mode=` 让每个标签页各用一个模式（聊天气泡 / 巨型 / 工作台 / 终端即将下架） |
+| 🎨 **七种界面模式** | 时间流、速览、动作台、聊天气泡、便签、工作台、看板，每种模式的显示设置可以单独配置；地址里的 `?mode=` 让每个标签页各用一个模式 |
+| 🚪 **房间管理** | 所有人都能看到房间列表，但进入某个房间需要该房间的密码。新建 / 删除 / 清理房间都需要出示**房间管理密码**（`ROOM_MANAGE_PASSWORD`，默认 `newroom123`，请务必改掉）。公共房间永远不可删除。房间信息与密码存在历史文件同目录的 `rooms.json` |
+| 🧱 **布局与展示** | 标准模式支持三种布局：上下（输入区在上）、左右（输入区在左）、聊天式（历史在上、输入区粘在底部）；历史消息与文件支持列表 / 宫格两种展示，宫格会按窗口宽度自动增减列数。切换入口在工作区条上（设置 → 个性化里也有），选择记在浏览器本地 |
 | 🧩 **动作库** | 35 个内置动作：Markdown 渲染、JSON 美化/压缩、Base64 / URL / Hex 编解码、汉字注音（逐字·制表·分词三种格式）、简繁转换、日期计算、哈希等 —— 用单个动作换一种方式看某条内容，也能把几个叠成流水线 |
-| ⏰ **定时自动化** | 按排期（每天 / 每周 / 仅一次 / 5 字段 cron）把渲染好的文本自动投进房间。正文是模板（`{{date:+1d}}`、`{{weekday:+1d}}`、`{{latest}}`），可以叠上动作库里「服务端能跑」的那部分动作。权限按房间分档（`roomAuth[x].automation`），定时消息默认不占房间历史额度（**仅 Go 端**，Cloudflare Worker 没有调度器） |
 
 ---
 
@@ -106,13 +107,13 @@ services:
       LISTEN_IP6: ${LISTEN_IP6:-}               # 默认为空，IPv6 监听地址，可设置为 ::
       LISTEN_PORT: ${LISTEN_PORT:-}             # 服务监听端口，默认为 9501
       PREFIX: ${PREFIX:-}                       # 子路径反代前缀（配合 Nginx 使用），例如 /cloud-clipboard
-      MESSAGE_NUM: ${MESSAGE_NUM:-}             # 历史记录保留条数，默认为 10
-      AUTH_PASSWORD: ${AUTH_PASSWORD:-}         # 全局访问密码，留空即无需密码
+      MESSAGE_NUM: ${MESSAGE_NUM:-}             # 历史记录保留条数，默认为 100
+      AUTH_PASSWORD: ${AUTH_PASSWORD:-}         # 全局访问密码，默认为 root1234（默认开启；填 false 表示不启用）
       ROOM_AUTH_JSON: '${ROOM_AUTH_JSON:-{}}'   # 房间独立密码与策略 JSON，如 {"finance":"pass","keep":{"password":"kp","fileExpire":0}}
-      TEXT_LIMIT: ${TEXT_LIMIT:-}               # 文本最大长度，默认为 4096（约 2048 个汉字）
+      TEXT_LIMIT: ${TEXT_LIMIT:-}               # 文本最大长度，默认为 9000
       FILE_EXPIRE: ${FILE_EXPIRE:-}             # 上传文件过期时间（秒），默认为 3600（1小时），0 为不过期
-      FILE_LIMIT: ${FILE_LIMIT:-}               # 上传文件大小限制（字节），默认为 104857600（100MB）
-      ROOM_LIST: ${ROOM_LIST:-}                 # 是否在前端开启公开房间列表展示，默认 false
+      FILE_LIMIT: ${FILE_LIMIT:-}               # 上传文件大小限制（字节），默认为 1073741824（1GB）
+      ROOM_LIST: ${ROOM_LIST:-}                 # 房间列表与房间管理入口，默认 true
       MKCERT_DOMAIN_OR_IP: ${MKCERT_DOMAIN_OR_IP:-} # mkcert 域名/IP（自动生成自签证书），多个以空格分隔
       MANUAL_KEY_PATH: ${MANUAL_KEY_PATH:-}     # 自定义 SSL 私钥文件绝对路径（优先级高于 mkcert）
       MANUAL_CERT_PATH: ${MANUAL_CERT_PATH:-}   # 自定义 SSL 证书文件绝对路径（优先级高于 mkcert）

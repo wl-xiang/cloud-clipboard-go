@@ -81,17 +81,17 @@ func TestServerRoomProtectedMeansNeedsPassword(t *testing.T) {
 			reason: "配置里有这一项，但它显式开放 —— 旧实现（按「有没有这一项」）在这里会挂一把不存在的锁",
 		},
 		{
-			name:   "只写了 automation 的条目不代表要密码（无全局密码时）",
-			config: `{"server": {"roomAuth": {"ops": {"automation": "single"}}}}`,
+			name:   "只写了 fileExpire 的条目不代表要密码（无全局密码时）",
+			config: `{"server": {"roomAuth": {"ops": {"fileExpire": 604800}}}}`,
 			room:   "ops",
 			want:   false,
 			reason: "条目本身不是锁；既没密码也没开放声明、又没有全局密码 → 房间里不需要钥匙",
 		},
 		{
-			name: "只写了 automation 的条目要回落全局密码",
+			name: "只写了 fileExpire 的条目要回落全局密码",
 			config: `{"server": {
 				"auth": "global-pass",
-				"roomAuth": {"ops": {"automation": "single"}}
+				"roomAuth": {"ops": {"fileExpire": 604800}}
 			}}`,
 			room:   "ops",
 			want:   true,

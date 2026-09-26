@@ -16,17 +16,36 @@ services:
             LISTEN_IP6: ${LISTEN_IP6:-} #默认为空,ipv6地址,可设置为::,不懂勿动
             LISTEN_PORT: ${LISTEN_PORT:-} #默认为9501,可设置为其他端口
             PREFIX: ${PREFIX:-} #子路径,可配合nginx使用,格式: /cloud-clipboard
-            MESSAGE_NUM: ${MESSAGE_NUM:-} #历史记录的数量,默认为10
-            AUTH_PASSWORD: ${AUTH_PASSWORD:-} #访问密码,默认为false,可自定义字符串密码
+            MESSAGE_NUM: ${MESSAGE_NUM:-} #历史记录的数量,默认为100
+            AUTH_PASSWORD: ${AUTH_PASSWORD:-} #访问密码,默认为root1234（默认开启,不带密码进不了平台;填 false 表示不启用）
             ROOM_AUTH_JSON: '${ROOM_AUTH_JSON:-{}}' #房间密码JSON, 例如 {"finance":"finance-pass","ops":""}
-            TEXT_LIMIT: ${TEXT_LIMIT:-} #文本长度限制,默认为4096(2048个汉字),可设置为其他长度
+            TEXT_LIMIT: ${TEXT_LIMIT:-} #文本长度限制,默认为9000,可设置为其他长度
             FILE_EXPIRE: ${FILE_EXPIRE:-} #文件过期时间,默认为3600(1小时),可设置为其他时间,单位为秒
-            FILE_LIMIT: ${FILE_LIMIT:-} #文件大小限制,默认为104857600(100MB),可设置为其他大小,单位为字节
+            FILE_LIMIT: ${FILE_LIMIT:-} #文件大小限制,默认为1073741824(1GB),可设置为其他大小,单位为字节
             MKCERT_DOMAIN_OR_IP: ${MKCERT_DOMAIN_OR_IP:-} #mkcert域名或IP,默认为空,可设置为其他域名或IP,多个用空格分隔,仅域名支持通配符*
             MANUAL_KEY_PATH: ${MANUAL_KEY_PATH:-} #手动设置证书路径,默认为空,该参数优先级高于MKCERT_DOMAIN_OR_IP
             MANUAL_CERT_PATH: ${MANUAL_CERT_PATH:-} #手动设置证书路径,默认为空,该参数优先级高于MKCERT_DOMAIN_OR_IP
-            ROOM_LIST: ${ROOM_LIST:-} #是否启用房间列表展示功能,默认false
+            ROOM_LIST: ${ROOM_LIST:-} #是否启用房间列表/房间管理功能,默认true
+            ROOM_MANAGE_PASSWORD: ${ROOM_MANAGE_PASSWORD:-} #房间管理密码(新建/删除/清理房间都要),默认newroom123
         volumes:
-            - /path/your/dir/data:/app/server-node/data #请注意修改为你自己的目录
-        # image: jonnyan404/cloud-clipboard-go:latest
-        image: ghcr.io/jonnyan404/cloud-clipboard-go:latest
+            # 数据卷（历史记录 / 上传的文件 / mkcert 自签证书）。
+            # 默认用具名卷：开箱即用，不必先建目录；位置用
+            #   docker volume inspect cloud-clipboard-data
+            # 查。想直接看到文件就换成绑定挂载：
+            #   - ./data:/app/server-node/data
+            # （换之前先 mkdir -p ./data，并保证容器内可写）
+            - cloud-clipboard-data:/app/server-node/data
+        # ── 镜像来源：二选一 ──────────────────────────────────────────
+        # 默认走**本地源码构建**：前端 + 后端一起编进镜像，能带上本仓库里
+        # 还没发布的改动（含前端 dist 与 Go 内嵌产物）。
+        #     docker compose up -d --build
+        # 想用官方发布镜像（拉取快，但不含本地改动）就把下面 image 换成注释里那行、并删掉 build。
+        build:
+            context: .
+            dockerfile: Dockerfile
+        # 构建产物打这个 tag，`docker images` 里认得出本地这一版
+        image: cloud-clipboard-go:local
+        # image: ghcr.io/jonnyan404/cloud-clipboard-go:latest
+
+volumes:
+    cloud-clipboard-data:
