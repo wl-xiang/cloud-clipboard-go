@@ -8,14 +8,63 @@ const ROOM_AUTH_CACHE_KEY = 'roomAuthCache';
 const DEFAULT_ROOM_KEY = '__default__';
 const GLOBAL_ROOM_KEY = '__global__';
 
-function loadRoomAuthCache() {
+// 会话/刷新策略（见 scheduleAuthRefresh）：
+// 令牌本身默认 7 天有效，只要还在用就**每天顶一次**，让「一直在用的人」永远不必再输密码。
+// 顶不破的是服务端那条绝对生存期（默认 30 天），前端再勤刷新也没用 —— 那是刻意的。
+const AUTH_REFRESH_WINDOW_SECONDS = 24 * 60 * 60;
+const AUTH_REFRESH_LEAD_SECONDS = 60;
+
+// 凭据怎么从服务端交到浏览器手上。
+// **同源**时一律走 `cookie`：服务端把它塞进 HttpOnly Cookie，前端 JS 从头到尾接触不到令牌，
+// 页面上的任意脚本（包括第三方库被打进供应链攻击的那种）都偷不走登录态。
+// 跨源部署时浏览器默认不携带 Cookie，那时退回「令牌 + localStorage」—— 功能一致，
+// 只是少了 HttpOnly 那层防护。
+function cookieDeliveryAvailable() {
     try {
-        const raw = sessionStorage.getItem(ROOM_AUTH_CACHE_KEY);
+        return window.location.origin === new URL(APP_BASE_URL).origin;
+    } catch {
+        return false;
+    }
+}
+const AUTH_DELIVERY = cookieDeliveryAvailable() ? 'cookie' : 'token';
+
+function normalizeAuthEntry(value) {
+    if (typeof value === 'string' && value) {
+        return { token: value, expiresAt: 0, delivery: 'token', sessionId: '' };
+    }
+    if (value && typeof value === 'object') {
+        return {
+            token: typeof value.token === 'string' ? value.token : '',
+            expiresAt: Number(value.expiresAt) || 0,
+            delivery: value.delivery === 'cookie' ? 'cookie' : 'token',
+            sessionId: typeof value.sessionId === 'string' ? value.sessionId : '',
+        };
+    }
+    return null;
+}
+
+function loadRoomAuthCache() {
+    // ⚠️ 存在 localStorage、**不是** sessionStorage：后者关掉标签页就没了，
+    // 那样七天的会话在第一天晚上就消失了 —— 用户体感还是「天天要输密码」。
+    // 这里存的也不是凭据本体：Cookie 模式下只是「登录过、什么时候到期」的标记，
+    // 令牌始终留在浏览器的 HttpOnly Cookie 里。
+    try {
+        const raw = localStorage.getItem(ROOM_AUTH_CACHE_KEY) || sessionStorage.getItem(ROOM_AUTH_CACHE_KEY);
         if (!raw) {
             return {};
         }
         const parsed = JSON.parse(raw);
-        return parsed && typeof parsed === 'object' ? parsed : {};
+        if (!parsed || typeof parsed !== 'object') {
+            return {};
+        }
+        const normalized = {};
+        Object.entries(parsed).forEach(([key, value]) => {
+            const entry = normalizeAuthEntry(value);
+            if (entry) {
+                normalized[key] = entry;
+            }
+        });
+        return normalized;
     } catch {
         return {};
     }
@@ -66,7 +115,12 @@ export const useWebSocketStore = defineStore('websocket', {
             return this.normalizeRoomName(room) || DEFAULT_ROOM_KEY;
         },
         persistRoomAuthCache() {
-            sessionStorage.setItem(ROOM_AUTH_CACHE_KEY, JSON.stringify(this.roomAuthCache));
+            try {
+                localStorage.setItem(ROOM_AUTH_CACHE_KEY, JSON.stringify(this.roomAuthCache));
+                sessionStorage.removeItem(ROOM_AUTH_CACHE_KEY); // 老版本的存档一次性搬家到这里
+            } catch {
+                // 隐私模式下 localStorage 可能不可写 —— 最坏是关掉浏览器要重新登录，不该崩
+            }
         },
         getGlobalAuthToken() {
             const entry = this.roomAuthCache[GLOBAL_ROOM_KEY];
@@ -78,21 +132,37 @@ export const useWebSocketStore = defineStore('websocket', {
             }
             return '';
         },
+        // hasGlobalSession 当前是不是用**平台密码**登录的。
+        //
+        // ⚠️ Cookie 模式下前端拿不到令牌本体（这正是它的意义），所以「我是不是管理员」
+        // 不能再靠「有没有令牌」判断 —— 那样会让 Cookie 模式下的管理员功能全部静默失效
+        // （房间管理、配额豁免……界面上看不出为什么不能用）。这里改成「有没有标记」。
+        hasGlobalSession() {
+            const entry = normalizeAuthEntry(this.roomAuthCache[GLOBAL_ROOM_KEY]);
+            if (!entry) {
+                return false;
+            }
+            if (entry.expiresAt > 0 && entry.expiresAt <= Math.floor(Date.now() / 1000)) {
+                return false;
+            }
+            return entry.delivery === 'cookie' || Boolean(entry.token);
+        },
         getEffectiveAuthEntry(room = this.room) {
             const now = Math.floor(Date.now() / 1000);
             const read = key => {
-                const entry = this.roomAuthCache[key];
-                if (typeof entry === 'string' && entry) {
-                    return { token: entry, expiresAt: 0, key };
+                const entry = normalizeAuthEntry(this.roomAuthCache[key]);
+                if (!entry) {
+                    return null;
                 }
-                if (entry && typeof entry === 'object' && typeof entry.token === 'string' && entry.token) {
-                    const expiresAt = Number(entry.expiresAt) || 0;
-                    if (expiresAt > 0 && expiresAt <= now) {
-                        return null;
-                    }
-                    return { token: entry.token, expiresAt, key };
+                // Cookie 模式下没有令牌是正常的 —— 凭据在 HttpOnly Cookie 里，这条路只作标记
+                const usable = entry.delivery === 'cookie' ? true : Boolean(entry.token);
+                if (!usable) {
+                    return null;
                 }
-                return null;
+                if (entry.expiresAt > 0 && entry.expiresAt <= now) {
+                    return null;
+                }
+                return { token: entry.token, expiresAt: entry.expiresAt, delivery: entry.delivery, key };
             };
             return read(this.getRoomStorageKey(room)) || read(GLOBAL_ROOM_KEY);
         },
@@ -100,10 +170,14 @@ export const useWebSocketStore = defineStore('websocket', {
             const effective = this.getEffectiveAuthEntry(room);
             return effective ? effective.token : '';
         },
-        cacheAuthTokenForRoom(room, token, expiresAt = 0) {
+        // hasRoomSession 这个房间现在有没有有效期内的登录状态（不限交付方式）。
+        hasRoomSession(room = this.room) {
+            return Boolean(this.getEffectiveAuthEntry(room));
+        },
+        cacheAuthTokenForRoom(room, token, expiresAt = 0, delivery = AUTH_DELIVERY) {
             const normalizedToken = (token || '').trim();
             const key = this.getRoomStorageKey(room);
-            if (!normalizedToken) {
+            if (!normalizedToken && delivery !== 'cookie') {
                 this.clearAuthTokenForRoom(room);
                 return;
             }
@@ -111,7 +185,12 @@ export const useWebSocketStore = defineStore('websocket', {
             const effectiveExpiresAt = Number(expiresAt) > 0
                 ? Number(expiresAt)
                 : (existing && typeof existing === 'object' && Number(existing.expiresAt) > 0 ? Number(existing.expiresAt) : 0);
-            this.roomAuthCache[key] = { token: normalizedToken, expiresAt: effectiveExpiresAt };
+            this.roomAuthCache[key] = {
+                token: normalizedToken,
+                expiresAt: effectiveExpiresAt,
+                delivery: delivery === 'cookie' ? 'cookie' : 'token',
+                sessionId: '',
+            };
             this.persistRoomAuthCache();
             if (this.normalizeRoomName(room) === this.currentRoom) {
                 this.authCode = normalizedToken;
@@ -128,6 +207,19 @@ export const useWebSocketStore = defineStore('websocket', {
                 this.authCode = '';
                 this.clearAuthRefreshTimer();
             }
+        },
+        // clearAllAuthCache 丢掉全部本地登录标记（退出登录用）。
+        // ⚠️ 服务端那份是真正被吊销的东西 —— 这里的清理只是让界面立刻回到「未登录」状态。
+        clearAllAuthCache() {
+            this.roomAuthCache = {};
+            try {
+                localStorage.removeItem(ROOM_AUTH_CACHE_KEY);
+                sessionStorage.removeItem(ROOM_AUTH_CACHE_KEY);
+            } catch {
+                // 同上：不可写不影响功能
+            }
+            this.authCode = '';
+            this.clearAuthRefreshTimer();
         },
         getKnownAuthTokens(room = this.room) {
             const tokens = [];
@@ -210,14 +302,18 @@ export const useWebSocketStore = defineStore('websocket', {
         },
         async obtainRoomSessionToken(room, password) {
             try {
-                const response = await axios.post('auth/token', { password }, {
+                const response = await axios.post('auth/token', { password, delivery: AUTH_DELIVERY }, {
                     params: new URLSearchParams([['room', this.normalizeRoomName(room)]]),
                     __skipRoomAuthHandling: true,
                 });
                 const data = response.data || {};
                 return {
-                    token: data.token || null,
+                    token: data.token || '',
+                    // 老版本服务端不认 delivery 参数：它照样会返回 token ——
+                    // 那就当本次是 token 模式走，别把自己卡在「等一块不会来的 Cookie」上。
+                    delivery: data.delivery === 'cookie' ? 'cookie' : (data.token ? 'token' : AUTH_DELIVERY),
                     expiresAt: Number(data.expiresAt) || 0,
+                    sessionId: data.sessionId || '',
                     scope: data.scope === 'global' ? 'global' : '',
                 };
             } catch (error) {
@@ -227,19 +323,21 @@ export const useWebSocketStore = defineStore('websocket', {
         },
         async refreshRoomSessionToken(room) {
             const normalizedRoom = this.normalizeRoomName(room);
-            const currentToken = this.getAuthTokenForRoom(normalizedRoom);
-            if (!currentToken) {
+            const effective = this.getEffectiveAuthEntry(normalizedRoom);
+            if (!effective) {
                 return null;
             }
             try {
-                const response = await axios.post('auth/token/refresh', null, {
+                const response = await axios.post('auth/token/refresh', { delivery: AUTH_DELIVERY }, {
                     params: new URLSearchParams([['room', normalizedRoom]]),
                     __skipRoomAuthHandling: true,
                 });
                 const data = response.data || {};
                 return {
-                    token: data.token || null,
+                    token: data.token || '',
+                    delivery: data.delivery === 'cookie' ? 'cookie' : (data.token ? 'token' : effective.delivery),
                     expiresAt: Number(data.expiresAt) || 0,
+                    sessionId: data.sessionId || '',
                     scope: data.scope === 'global' ? 'global' : '',
                 };
             } catch (error) {
@@ -254,30 +352,30 @@ export const useWebSocketStore = defineStore('websocket', {
                 return;
             }
             const effective = this.getEffectiveAuthEntry(normalizedRoom);
-            const token = effective ? effective.token : '';
-            const expiresAt = effective ? effective.expiresAt : 0;
-            if (!token || !expiresAt) {
+            if (!effective || !effective.expiresAt) {
                 return;
             }
-            const remainingSeconds = expiresAt - Math.floor(Date.now() / 1000);
-            if (remainingSeconds <= 60) {
-                return;
-            }
-            const delay = Math.max(0, Math.min((remainingSeconds - 60) * 1000, 24 * 60 * 60 * 1000));
+            const remainingSeconds = effective.expiresAt - Math.floor(Date.now() / 1000);
+            // 「离到期还早」不等于「不用续」：七天是**滑动**的，趁早顶一次，
+            // 用户永远碰不到那条边界；真等快到期再去续，那时可能已经掉过一次线了。
+            const delaySeconds = remainingSeconds > AUTH_REFRESH_WINDOW_SECONDS
+                ? remainingSeconds - AUTH_REFRESH_WINDOW_SECONDS
+                : Math.max(0, remainingSeconds - AUTH_REFRESH_LEAD_SECONDS);
             this.authRefreshTimer = setTimeout(async () => {
                 this.authRefreshTimer = null;
                 const refreshed = await this.refreshRoomSessionToken(normalizedRoom);
-                if (refreshed && refreshed.token) {
+                if (refreshed && (refreshed.token || refreshed.delivery === 'cookie') && refreshed.expiresAt) {
                     const cacheRoom = refreshed.scope === 'global' ? GLOBAL_ROOM_KEY : effective.key;
-                    this.cacheAuthTokenForRoom(cacheRoom, refreshed.token, refreshed.expiresAt);
-                    this.scheduleAuthRefresh(normalizedRoom);
-                } else {
-                    this.clearAuthTokenForRoom(normalizedRoom);
-                    if (normalizedRoom === this.currentRoom) {
-                        this.openAuthDialog(normalizedRoom);
-                    }
+                    this.cacheAuthTokenForRoom(cacheRoom, refreshed.token, refreshed.expiresAt, refreshed.delivery);
+                    return;
                 }
-            }, delay);
+                // 续不动 = 会话被吊销了（登出 / 被踢 / 超过绝对生存期）。
+                // 别再安排下一次，直接清干净并让用户重新认证 —— 否则会无限重试。
+                this.clearAuthTokenForRoom(normalizedRoom);
+                if (normalizedRoom === this.currentRoom) {
+                    this.openAuthDialog(normalizedRoom);
+                }
+            }, delaySeconds * 1000);
         },
 
         getWebSocketEndpoint(room = this.room) {
@@ -313,11 +411,17 @@ export const useWebSocketStore = defineStore('websocket', {
                 const currentRoom = this.normalizeRoomName(this.room);
                 let resolvedToken = this.getAuthTokenForRoom(currentRoom);
 
+                // 只要这条路走得通，就顺便把续期排上 ——
+                // 包括「浏览器关了又打开」的情形：那时只有本地标记，从来没人排过定时器。
+                this.scheduleAuthRefresh(currentRoom);
+
                 // 无论是否已缓存 token，都先探测 /server 以可靠获知房间是否需要认证。
                 // 若仅在 app.config?.auth 为真时才探测，首次加载（config 需在认证后才会收到）
                 // 受保护房间时会永远探测不到，导致既不连接也不弹认证窗口。
                 const serverInfo = await this.fetchServerInfo(currentRoom);
-                if (!resolvedToken && serverInfo.auth) {
+                // Cookie 模式下 `authorized` 已经把服务端的登录态算进去了 ——
+                // 只要它是 true，就说明这次连接不需要任何额外凭据（连 WS 子协议都不用带）。
+                if (serverInfo.auth && serverInfo.authorized !== true && !resolvedToken) {
                     // 平台级闸门（server.auth）没通过时**不弹房间对话框**：
                     // 那时全屏闸门已经盖住了整个界面，再叠一个房间对话框只会让人不知道该填哪个。
                     // 密码由闸门统一收，通过后这里有 token，直接往下走。
@@ -649,15 +753,20 @@ export const useWebSocketStore = defineStore('websocket', {
                 return true;
             }
 
-            const knownToken = this.getAuthTokenForRoom(normalizedRoom);
             const isProtected = this.roomProtectionCache[normalizedRoom];
-            const app = useAppStore();
-            const globalAuth = Boolean(app.config?.auth);
-
-            if (!knownToken && (isProtected === true || (isProtected === undefined && globalAuth))) {
-                const token = await this.resolveAuthTokenForRoom(normalizedRoom, { interactive: true });
-                if (token === null) {
-                    return false;
+            // 明确标记为「开放」的房间不必问；其余（含未知）一律问一次服务端 ——
+            // `/server?room=` 的 `authorized` 由服务端算，Cookie 里的登录态也算在内。
+            if (isProtected !== false) {
+                try {
+                    const info = await this.fetchServerInfo(normalizedRoom);
+                    if (info.auth && info.authorized !== true) {
+                        const token = await this.resolveAuthTokenForRoom(normalizedRoom, { interactive: true });
+                        if (token === null) {
+                            return false;
+                        }
+                    }
+                } catch {
+                    // 探测失败不拦 —— 跳过去之后 connect() 还会再试一次
                 }
             }
 
@@ -674,20 +783,22 @@ export const useWebSocketStore = defineStore('websocket', {
             this.authDialogLoading = true;
             this.authCodeError = '';
             try {
-                const response = await axios.post('auth/token', { password: value }, {
+                const response = await axios.post('auth/token', { password: value, delivery: AUTH_DELIVERY }, {
                     params: new URLSearchParams([['room', this.normalizeRoomName(this.room)]]),
                     __skipRoomAuthHandling: true,
                 });
                 const data = response.data || {};
-                const token = data.token || '';
-                if (!token) {
+                const delivery = data.delivery === 'cookie' ? 'cookie' : (data.token ? 'token' : AUTH_DELIVERY);
+                // Cookie 模式下**故意没有 token**：凭据留在 HttpOnly Cookie 里，
+                // 前端拿不到也不需要拿 —— 见 auth_session.go 里 Cookie 那条路的说明。
+                if (delivery !== 'cookie' && !data.token) {
                     this.authCodeError = 'authInvalid';
                     return false;
                 }
                 // scope=global 说明填的是**平台密码**（不是某个房间的密码）——
                 // 缓存到 GLOBAL_ROOM_KEY，这样任何房间都能用它（服务端 tokenMatchesRoom 认全局令牌）。
                 const cacheKey = data.scope === 'global' ? GLOBAL_ROOM_KEY : this.normalizeRoomName(this.room);
-                this.cacheAuthTokenForRoom(cacheKey, token, Number(data.expiresAt) || 0);
+                this.cacheAuthTokenForRoom(cacheKey, data.token || '', Number(data.expiresAt) || 0, delivery);
                 this.inputPassword = '';
                 this.retry = 0;
                 // 重连会重新拉一次 /server，闸门据此自己撤掉。
@@ -716,16 +827,18 @@ export const useWebSocketStore = defineStore('websocket', {
                     return;
                 }
                 const session = await this.obtainRoomSessionToken(targetRoom, password);
-                if (!session || !session.token) {
+                if (!session) {
                     this.authCodeError = 'connectionFailedRetry';
                     return;
                 }
-                if (session.scope === 'global') {
-                    this.cacheAuthTokenForRoom(GLOBAL_ROOM_KEY, session.token, session.expiresAt);
-                } else {
-                    this.cacheAuthTokenForRoom(targetRoom, session.token, session.expiresAt);
+                if (session.delivery !== 'cookie' && !session.token) {
+                    this.authCodeError = 'connectionFailedRetry';
+                    return;
                 }
-                this.scheduleAuthRefresh(targetRoom);
+                const cacheKey = session.scope === 'global'
+                    ? GLOBAL_ROOM_KEY
+                    : this.getRoomStorageKey(targetRoom);
+                this.cacheAuthTokenForRoom(cacheKey, session.token, session.expiresAt, session.delivery);
                 this.inputPassword = '';
                 this.authCodeDialog = false;
                 this.authPendingRoom = '';
@@ -740,6 +853,71 @@ export const useWebSocketStore = defineStore('websocket', {
                 this.authCodeError = 'connectionFailedRetry';
             } finally {
                 this.authDialogLoading = false;
+            }
+        },
+
+        /* ---------- 登出与登录设备管理 ---------- */
+
+        // logout 退出登录。
+        //
+        // ⚠️ 必须打到服务端：只删 localStorage 里的标记是「眼不见为净」，服务端那份会话还活着，
+        // 拿到过令牌的人照样能继续用。服务端吊销之后令牌立刻失效、WebSocket 也会被掐断，
+        // 本地这份清理只是让界面马上回到未登录的样子。
+        //
+        // all=true：连同其它所有设备一起踢下线（需要当前是平台级会话）。
+        async logout({ all = false } = {}) {
+            try {
+                await axios.post('auth/logout', { all }, {
+                    params: new URLSearchParams([['room', this.normalizeRoomName(this.room)]]),
+                    __skipRoomAuthHandling: true,
+                });
+            } catch (error) {
+                // 网络出错也照常清本地：用户点了退出，界面就不该还显示登录态
+                console.error('Logout request failed:', error);
+            }
+            const hadSession = this.hasRoomSession(this.room);
+            this.clearAllAuthCache();
+            this.disconnect();
+            this.retry = 0;
+            if (hadSession) {
+                // 重连会把 /server 再问一遍：平台闸门或房间密码框自己就回来了
+                this.connect();
+            }
+            return true;
+        },
+
+        // fetchSessions 列出服务端当前可见的登录会话（见云端的 GET /auth/sessions）。
+        // 平台级会话看得到全部；房间会话只看得到自己那一族 —— 这是服务端的边界，前端不用重复实现。
+        async fetchSessions() {
+            try {
+                const response = await axios.get('auth/sessions', { __skipRoomAuthHandling: true });
+                const data = response.data || {};
+                return {
+                    sessions: Array.isArray(data.sessions) ? data.sessions : [],
+                    ttl: Number(data.ttl) || 0,
+                    lifetime: Number(data.lifetime) || 0,
+                };
+            } catch (error) {
+                console.error('Failed to load sessions:', error);
+                return null;
+            }
+        },
+
+        // revokeSession 踢掉某一台设备。sid === 'all' 表示「全部设备下线」。
+        async revokeSession(sid) {
+            const target = String(sid || '').trim();
+            if (!target) {
+                return false;
+            }
+            try {
+                await axios.delete('auth/sessions', {
+                    params: new URLSearchParams([['sid', target]]),
+                    __skipRoomAuthHandling: true,
+                });
+                return true;
+            } catch (error) {
+                console.error('Failed to revoke session:', error);
+                return false;
             }
         },
     },

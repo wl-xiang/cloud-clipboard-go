@@ -36,7 +36,8 @@ https://host/cloud-clipboard/text        # PREFIX=/cloud-clipboard
 |---|---|---|
 | Bearer 头 | `Authorization: Bearer <凭据>` | **推荐**。凭据可以是全局密码、房间密码，或 `/auth/token` 签发的会话令牌 |
 | 查询串 | `?auth=<凭据>` | 仅为兼容保留（快捷指令在用）。**别把密码写进可分享的 URL** |
-| 会话令牌 | 同上两种写法皆可 | 由 `/auth/token` 签发，默认 1 小时有效 |
+| 会话令牌 | 同上两种写法皆可 | 由 `/auth/token` 签发，默认 **7 天**有效（可续签，30 天后必须重新认证） |
+| Cookie | `cc_auth`（HttpOnly） | 浏览器专用通道：登录后自动携带，仅同源请求生效，详见 §4 |
 
 **房间与凭据的对应关系**：
 
@@ -116,7 +117,10 @@ curl "http://localhost:9501/content/7?format=raw"
 | GET | `/myip` | 客户端出口 IP | 否 |
 | GET | `/health` | 健康检查（**仅 Worker**） | 否 |
 | POST | `/auth/token` | 用密码换会话令牌 | 密码 |
-| POST | `/auth/token/refresh` | 续签会话令牌 | 令牌 |
+| POST | `/auth/token/refresh` | 续签会话令牌（会轮换令牌） | 令牌 |
+| POST | `/auth/logout` | 让当前（或全部）会话立刻失效 | 令牌 / Cookie |
+| GET | `/auth/sessions` | 列出当前可见的登录会话 | 令牌 / Cookie |
+| DELETE | `/auth/sessions` | 吊销指定会话（踢设备） | 令牌 / Cookie |
 | POST | `/text` | 发送文本 | 是 |
 | POST | `/upload` | 上传文件 | 是 |
 | POST | `/upload/chunk/:uuid` | 分块上传（**仅 Go**） | 是 |
@@ -183,11 +187,13 @@ Content-Type: application/json
 响应：
 
 ```json
-{"token": "eyJ...", "expiresAt": 1758003600, "scope": "global"}
+{"token": "eyJ...", "expiresAt": 1758003600, "absoluteExpiresAt": 1760595600, "scope": "global", "sessionId": "..."}
 ```
 
 - `scope` 为 `global` 表示用全局密码登录，令牌对所有房间有效；房间密码登录则为 `""`
-- 令牌默认 1 小时有效
+- 令牌默认 **7 天**有效（到期前可续签，`absoluteExpiresAt` 是绝对上限，到点必须重新输密码）
+- `delivery: "cookie"` 时令牌不出现在响应体里，只写进 HttpOnly Cookie —— 浏览器请用这种
+- 连续输错密码会触发限速：同一来源 10 次失败后锁定 15 分钟，期间返回 `429 too_many_attempts`
 
 ### POST /auth/token/refresh
 
@@ -198,7 +204,41 @@ POST /auth/token/refresh?room=default
 Authorization: Bearer <旧令牌>
 ```
 
-响应同 `/auth/token`。续签会保留原令牌的 `scope`，不会把全局会话降级成房间专属。
+响应同 `/auth/token`。续签会保留原令牌的 `scope`，不会把全局会话降级成房间专属；
+同时**轮换**：签发新令牌后旧的即作废（留 2 分钟宽限给还在飞的请求），
+超过宽限期还有人用旧令牌 → 判定为令牌被复制，整个会话族作废。
+超过绝对生存期（`absoluteExpiresAt`）时返回 `401 reauth_required`，要求重新输密码。
+
+### POST /auth/logout
+
+```http
+POST /auth/logout
+Cookie: cc_auth=<浏览器凭据>
+Content-Type: application/json
+
+{"all": false}
+```
+
+服务端立刻吊销对应的会话：这之后的请求一律 401，已建立的 WebSocket 连接也会被断开。
+带 `{"all": true}` 且凭据是**平台级**时，所有设备的会话一起失效。
+服务端同时会清掉 `cc_auth` Cookie —— 所以即使请不到凭据也能登出。
+
+### GET /auth/sessions · DELETE /auth/sessions
+
+```http
+GET /auth/sessions
+Cookie: cc_auth=<浏览器凭据>
+```
+
+```json
+{"sessions":[{"id":"a1b2…","room":"default","scope":"global","createdAt":1758000000,
+  "expiresAt":1758600000,"absoluteExpiresAt":1760595600,"lastSeenAt":1758001000,
+  "userAgent":"Mozilla/5.0 …","createdIp":"10.0.0.9","current":true}],
+ "ttl":604800,"lifetime":2592000}
+```
+
+`current` 标出「发起这次请求的是哪几条」。平台级会话看得到全部；房间会话只能看到**自己这一族**。
+`DELETE /auth/sessions?sid=<id>` 吊销指定会话（同样只在同一可见范围内有效）。
 
 ---
 

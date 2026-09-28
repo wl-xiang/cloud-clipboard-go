@@ -108,6 +108,19 @@ type ClipboardServer struct {
 	// 见 room_registry.go。
 	roomRegistry *roomRegistry `json:"-"`
 
+	// 登录会话表（auth-sessions.json）。「登出」能不能真的让凭据失效，全靠它 ——
+	// 令牌本身是无状态的，服务端不记账就吊销不了任何东西。见 auth_session.go。
+	// nil 表示这次没有会话表（例如单元测试里直接拼出来的服务器）：那时一律按
+	// 「签名即有效」处理，令牌自然到期为止。
+	sessionStore  *sessionStore `json:"-"`
+	sessionTicker *time.Ticker  `json:"-"`
+	loginGuard    *loginGuard   `json:"-"`
+
+	// connSessionMap WebSocket 连接 -> 握手时用的会话 id。
+	// WebSocket 只在握手时查一次凭据，之后就没有复核机会了，
+	// 所以「登出 / 踢设备」必须拿着这张表才能找到要掐断的那几条连接。
+	connSessionMap map[*websocket.Conn]string `json:"-"`
+
 	// 局域网延迟统计（WebSocket ping/pong RTT）
 	latency *latencyTracker `json:"-"`
 }

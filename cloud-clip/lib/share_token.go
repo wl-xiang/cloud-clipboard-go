@@ -47,6 +47,16 @@ type shareClaims struct {
 	MaxUses int    `json:"mu,omitempty"`  // 0 = unlimited
 	// 非空表示这条分享需要密码；值是 HMAC(签名密钥, 密码) 的前若干位
 	PwdHash string `json:"p,omitempty"`
+
+	// 以下三个字段只有 **登录会话令牌**（typ=room_session）会带，见 auth_session.go。
+	// 它们把「服务端会话表里的那条记录」和「这枚令牌」绑在一起，是吊销 / 轮换能做的前提。
+	// Sid string `json:"sid,omitempty"` // 会话 id：服务端据此查这条记录的生死
+	Sid string `json:"sid,omitempty"`
+	// Fam 会话族 id：一次输密码是所有后续令牌的共同祖先，吊销按族走
+	Fam string `json:"fam,omitempty"`
+	// Crt 会话族的诞生时刻。**签过名谁也改不了**，所以绝对生存期（到点必须重输密码）
+	// 即使服务端会话表整个丢了也照样生效 —— 这条约束不依赖任何服务端状态。
+	Crt int64 `json:"crt,omitempty"`
 }
 
 type shareRequest struct {
@@ -267,8 +277,30 @@ func (s *ClipboardServer) parseShareToken(token string) (*shareClaims, bool) {
 	return &claims, true
 }
 
-// issueRoomSessionToken 签发房间会话令牌。
-// scope 为 "global" 时签发全局会话令牌（对所有房间有效），否则按 room 绑定。
+// signRoomSessionToken 签发一枚**已登记会话**的会话令牌。正常业务的唯一入口，
+// 调用方应当一律用 openSession（见 auth_session.go）—— 它会先在服务端建账再签。
+//
+// ⚠️ 手工填给出的 familyStart 会被写进 payload 并签名，服务端据此执行绝对生存期。
+//    不要为了让某枚令牌「活久一点」去编一个更早的时间戳 —— 那是给未来的自己挖坑。
+func (s *ClipboardServer) signRoomSessionToken(room, sid, familyID, scope string, familyStart, expiresAt int64) (string, error) {
+	claims := shareClaims{
+		Type:  "room_session",
+		ID:    normalizeRoomName(room),
+		Room:  normalizeRoomName(room),
+		Scope: scope,
+		Exp:   expiresAt,
+		Sid:   strings.TrimSpace(sid),
+		Fam:   strings.TrimSpace(familyID),
+		Crt:   familyStart,
+	}
+	return s.signShareClaims(claims)
+}
+
+// issueRoomSessionToken 兼容旧签名：只签名一枚令牌，**不登记会话**。
+//
+// 服务于两类调用：单元测试（直接拼 ClipboardServer，没有会话表）和少数只需要
+// 「一枚能自证的会话令牌」的场景。业务代码请用 openSession ——
+// 不登记会话的令牌吊销不了、在会话管理界面里也查不到（它就是个没有户口的黑户）。
 func (s *ClipboardServer) issueRoomSessionToken(room string, ttlSeconds int, scope string) (string, error) {
 	if ttlSeconds <= 0 {
 		ttlSeconds = 60 * 60
@@ -309,7 +341,7 @@ func (s *ClipboardServer) validateRoomSessionToken(room, token string) bool {
 	}
 	// 全局会话令牌对所有房间有效
 	if claims.Scope == "global" {
-		return true
+		return s.sessionClaimsActive(claims)
 	}
 	if normalizeRoomName(room) != claims.Room {
 		return false
@@ -317,7 +349,9 @@ func (s *ClipboardServer) validateRoomSessionToken(room, token string) bool {
 	if normalizeRoomName(claims.ID) != normalizeRoomName(room) {
 		return false
 	}
-	return true
+	// 签名 + 有效期只是「出生证明」：还要回来对一次账 ——
+	// 这条会话有没有被登出 / 被管理端踢掉 / 被续签轮换掉（详见 auth_session.go）。
+	return s.sessionClaimsActive(claims)
 }
 
 // shouldConsumeShareUse decides whether this HTTP request should count against maxUses.

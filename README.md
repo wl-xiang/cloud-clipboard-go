@@ -63,7 +63,7 @@
 | 📦 **Easy Deployment** | Supports Docker, binaries, Homebrew, OpenWrt, Serverless, and source builds |
 | 🌍 **Cross-platform** | Available for Windows, macOS, Linux, Android, and iOS |
 | ⚡ **Real-time Sync** | Instant bidirectional synchronization via WebSocket |
-| 🔐 **Authentication** | Password protection and per-room access control |
+| 🔐 **Authentication** | Password protection and per-room access control. One successful sign-in keeps you logged in for **7 days** (`SESSION_TTL_HOURS`, default 168); browsers hold the session in an HttpOnly cookie, and Settings → Security can sign out a device immediately — revoking the token and dropping its live connection, or disconnecting just one suspicious device |
 | 💾 **Flexible Storage** | Configurable history capacity and file expiration policies |
 | 🚀 **Lightweight** | Minimal resource consumption, runs smoothly even on routers or low-spec hardware |
 | 🔍 **Shortcuts Support** | Android and iOS shortcut integration for one-tap sharing |

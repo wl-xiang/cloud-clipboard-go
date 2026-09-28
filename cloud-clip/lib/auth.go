@@ -112,7 +112,17 @@ func extractAuthToken(r *http.Request) string {
 		return authHeader
 	}
 
-	return r.URL.Query().Get("auth")
+	if queryToken := r.URL.Query().Get("auth"); queryToken != "" {
+		return queryToken
+	}
+
+	// 浏览器那条路：会话令牌放在 HttpOnly Cookie 里（见 auth_session.go），
+	// JS 读不到它，请求也不需要操心带上它。跨站请求不认这条通道（CSRF）。
+	if tokens := readSessionCookieTokens(r); len(tokens) > 0 {
+		return tokens[0]
+	}
+
+	return ""
 }
 
 // extractWebSocketToken 提取 WebSocket 握手使用的 token。
@@ -146,6 +156,12 @@ func extractAuthTokens(r *http.Request) []string {
 	}
 
 	pushToken(extractAuthToken(r))
+
+	// Cookie 里的每一条都要试：一个房间一条令牌（见 sessionCookieKey），
+	// 只试第一条的话，「先登录 A 房间再登录 B 房间」之后，回看 A 就变成没登录了。
+	for _, token := range readSessionCookieTokens(r) {
+		pushToken(token)
+	}
 
 	extraHeader := strings.TrimSpace(r.Header.Get("X-Room-Auth-Tokens"))
 	if extraHeader == "" {
@@ -281,12 +297,15 @@ func (s *ClipboardServer) isGlobalAdmin(token string) bool {
 // 这不放大权限：`canAccessRoom` 本来就认这种令牌对所有房间有效
 // （见 share_token.go 的 validateRoomSessionToken），而它就是用那个密码换来的 ——
 // 本来就是同一回事。
+//
+// ⚠️ 已经吊销的令牌不算数：全局令牌能进所有房间、还能做房间管理，
+// 「登出」如果不管它，等于退了管理员还活着。
 func (s *ClipboardServer) isGlobalSessionToken(token string) bool {
 	if strings.TrimSpace(token) == "" {
 		return false
 	}
 	claims, ok := s.parseRoomSessionToken(token)
-	return ok && claims.Scope == "global"
+	return ok && claims.Scope == "global" && s.sessionClaimsActive(claims)
 }
 
 func (s *ClipboardServer) getUploadedFileRoom(uuid string) (string, bool) {
