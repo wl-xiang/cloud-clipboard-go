@@ -29,9 +29,7 @@
         "storageDir": null, // 自定义文件存储目录，默认为临时文件夹的.cloud-clipboard-storage目录
         "roomList": true, // 房间列表 / 房间管理开关，默认 true。
         // 关掉它会把「创建 / 切换 / 删除房间」的入口整块藏起来，一般不要关。
-        "roomCleanup": 3600, //房间清理周期(秒)，清理消息数0的房间
-        "sessionTTL": 604800, // 登录会话的**滑动有效期**（秒，默认 7 天）：验证一次密码之后这么久之内不必再输
-        "sessionLifetime": 2592000 // 会话族的**绝对生存期**（秒，默认 30 天）：从第一次输密码算起，到点必须重新认证
+        "roomCleanup": 3600 //房间清理周期(秒)，清理消息数0的房间
     },
     "text": {
         "limit": 9000 // 文本的长度限制（默认 9000 字符）
@@ -59,22 +57,6 @@
 > 同时写了 `open` 和非空 `password` 属于配置写错：**按需要密码处理**（宁可多要一次密码，也不能因为多打了一个字段把房间敞开）。
 > 值也可以是对象 `{ "password": "xx", "fileExpire": N }`：`fileExpire` 为 `0` 表示该房间上传的文件永不过期；大于 `0` 表示覆盖全局 `file.expire`（秒）；不填表示沿用全局。注意 `fileExpire` 只影响修改配置之后上传的文件；历史条数轮转删除不受其影响。
 > 未通过认证的用户不会在房间列表里看到受保护房间。
->
-> “登录会话”的说明：
->
-> 密码验证通过之后，服务端签发一枚会话令牌，浏览器把它放在 `HttpOnly` Cookie 里（页面里的脚本读不到），
-> 凭据默认 **7 天**内不必再输（`server.sessionTTL`）。之所以敢给这么长，是因为它是**可吊销**的：
-> 用户点「退出登录」或者踢掉某台设备，服务端会立刻把对应会话标记为失效，连已经建立的 WebSocket 连接也会一并断开。
-> 三个上限同时生效，缺一个都不可：
->   1. **滑动有效期** `sessionTTL`（默认 604800 秒 = 7 天，合法区间 300 ~ 2592000）。正常使用会自动续期，连续七天不用才会被踢。
->   2. **绝对生存期** `sessionLifetime`（默认 2592000 秒 = 30 天）。从**第一次输密码**那刻算起，到点必须重新认证，续签也不会延长它 —— 这是「偷到一枚令牌就能无限续签」的解药。
->      它写进令牌自己的签名里，所以即便会话表（`auth-sessions.json`）被清了，这条约束依然成立。
->   3. **服务端可吊销**（见下面 `POST /auth/logout`）。令牌发出去就收不回来这件事，只在这一层有记账才做得到。
->
-> `sessionLifetime` 必须 ≥ `sessionTTL`，否则还没到滑动期限就被判过期（代码会把小的那个提上来）。
-> 会话记录在 `<storageDir>/auth-sessions.json`；把这个文件删掉 = 所有人重新输一次密码。
-> 另外，连续输错密码会触发登录限速（同一来源短时间内 10 次失败即锁定 15 分钟）——
-> 令牌能用七天意味着「猜中一次收益更大」，所以猜的过程必须慢下来。
 >
 ### HTTP API
 
@@ -238,56 +220,30 @@ $ curl -H "Authorization: Bearer xxxx" "http://localhost:9501/file/<uuid>/m.png"
 
 `/file/<uuid>/<name>` 按**文件自己记录的房间**鉴权，不看你传的 `?room=` —— 传了也不作数。
 
-#### 登录会话（七天免密）
+#### 房间会话令牌
 
-Web 前端用密码换取**会话令牌**，只保存令牌而不保存密码，到期前自动续签。
-默认 7 天不必再输密码（详见上面「登录会话」的说明）。
+Web 前端会用密码换取短期会话令牌，只缓存令牌而非密码，到期前自动续签。
 
 ```console
-# 用密码换取会话令牌（默认 7 天有效）
+# 用房间密码换取会话令牌（有效期 1 小时）
 $ curl -H "Content-Type: application/json" \
   -d '{"password":"room-pass"}' \
   "http://localhost:9501/auth/token?room=default"
-{"token":"...","expiresAt":1710607200,"absoluteExpiresAt":1713213600,"scope":"global","sessionId":"..."}
+{"token":"...","expiresAt":1710003600,"scope":"global"}
 
-# 浏览器推荐走 Cookie：令牌进 HttpOnly Cookie，页面脚本读不到（也就不可能被 XSS 偷走）
-$ curl -c cookies.txt -H "Content-Type: application/json" \
-  -d '{"password":"room-pass","delivery":"cookie"}' \
-  "http://localhost:9501/auth/token?room=default"
-{"token":"","delivery":"cookie","expiresAt":1710607200,"absoluteExpiresAt":1713213600,"scope":"global"}
-
-# 用仍有效的令牌续签（无需密码），浏览器会提前自动调用；每续一次都会换发新令牌
+# 用仍有效的令牌续签（无需密码），浏览器在到期前 60 秒自动调用
 $ curl -H "Authorization: Bearer <token>" \
   -X POST "http://localhost:9501/auth/token/refresh?room=default"
-{"token":"...","expiresAt":1710610800,"absoluteExpiresAt":1713213600,"scope":"global"}
-
-# 退出登录：服务端立刻吊销，**不需要知道令牌是什么也能清掉 Cookie**
-$ curl -b cookies.txt -X POST "http://localhost:9501/auth/logout"
-{"revoked":1,"all":false}
-$ curl -b cookies.txt -X POST -d '{"all":true}' "http://localhost:9501/auth/logout"  # 所有设备下线
-
-# 登录设备管理：看看现在谁在线，把不认识的踢掉
-$ curl -b cookies.txt "http://localhost:9501/auth/sessions"
-{"sessions":[{"id":"...","room":"default","scope":"global","createdAt":...,"expiresAt":...,
-  "lastSeenAt":...,"userAgent":"Mozilla/5.0 ...","createdIp":"10.0.0.9","current":true}],"ttl":604800,"lifetime":2592000}
-$ curl -b cookies.txt -X DELETE "http://localhost:9501/auth/sessions?sid=<会话 id>"
-{"revoked":1}
+{"token":"...","expiresAt":1710007200,"scope":"global"}
 ```
 
 说明：
-- `POST /auth/token` 接受 JSON `{"password":"...","delivery":"token"|"cookie"}`，密码正确返回 `token`、`expiresAt`、`absoluteExpiresAt`、`sessionId`
-- `delivery=cookie` 时令牌**不出现在响应体**里，只写进 `HttpOnly + SameSite=Lax` 的 Cookie（`cc_auth`）；HTTPS 下额外加 `Secure`
-- Cookie 这条通道只在**同源请求**上生效：跨站请求的 `Sec-Fetch-Site`/`Origin` 不对时，Cookie 里的令牌一律不认（防 CSRF）。`Authorization` 头不受此限，非浏览器客户端照旧
-- Cookie 里一个房间占一格：先登录 A 房间再登录 B 房间不会互相挤掉（上限 10 条）
-- `scope` 字段表示令牌作用域：用**全局密码**（`server.auth`）登录返回 `"global"`，该令牌对所有房间有效；用**房间专属密码**（`roomAuth`）登录返回 `""`（房间专属）。续签时作用域不变
-- `POST /auth/token/refresh` 会**轮换**：签发新令牌的同时把旧的作废（留 2 分钟给还在飞的请求）。有人在该窗口之后还拿着旧令牌来用 → 判定为令牌被复制，**整个会话族作废**
-- 续签不能突破 `absoluteExpiresAt`（默认 30 天）；到点这里返回 401 `reauth_required`，要求重新输密码
-- `POST /auth/logout` 认所有凭据来源（Body 令牌 / Cookie / Authorization）；`{"all":true}` 需要平台级凭据
-- `GET /auth/sessions` 的可见范围有硬边界：平台级会话看得到全部，房间会话只看得到**自己这一族**；`DELETE` 同理 —— 拿房间令牌踢不掉别人的会话
-- 吊销会一并掐断对应的 WebSocket 连接（否则要等到下一次重连才生效）
-- 连续输错密码会触发限速：同一来源短时间 10 次失败后锁定 15 分钟，期间**正确密码也不放行**（返回 429 + `Retry-After`）
-- 会话令牌等价于对应房间密码，仅用于本地保存，**勿放入可分享 URL**
-- WebSocket 握手（`/push`）优先使用 `Sec-WebSocket-Protocol` 子协议传递令牌（避免凭据进入 URL/访问日志）；浏览器走 Cookie 时连这个都不需要 —— 握手会自动带上
+- `POST /auth/token` 仅接受 JSON `{"password":"..."}`，密码正确返回 `token` 与 `expiresAt`
+- `scope` 字段表示令牌作用域：用**全局密码**（`server.auth`）登录返回 `"global"`，该令牌对所有房间有效，进入任意受保护房间无需再次输入密码；用**房间专属密码**（`roomAuth`）登录返回 `""`（房间专属）
+- 令牌续签时保留原作用域，全局令牌不会在刷新时降级为房间专属
+- `POST /auth/token/refresh` 通过 `Authorization: Bearer` 携带当前令牌，有效则签发新令牌；无效或缺失返回 401
+- 会话令牌等价于对应房间密码，仅用于浏览器内部，勿放入可分享 URL
+- WebSocket 握手（`/push`）优先使用 `Sec-WebSocket-Protocol` 子协议传递令牌（避免凭据进入 URL/访问日志）；`?auth=` 与 `Authorization` 仍作为兼容兜底
 
 #### 短期分享链接
 

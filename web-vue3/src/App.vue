@@ -10,7 +10,6 @@ import axios from 'axios';
 import { toast, toastState } from '@/plugins/toast';
 import TraditionalColorDialog from '@/components/TraditionalColorDialog.vue';
 import ShareHistoryDialog from '@/components/ShareHistoryDialog.vue';
-import SessionManagerDialog from '@/components/SessionManagerDialog.vue';
 import RoomList from '@/components/RoomList.vue';
 import QrcodeVue from 'qrcode.vue';
 import { errorMessage } from '@/util.js';
@@ -33,9 +32,6 @@ const mdiPalette = 'mdi-palette';
 const mdiPaletteSwatch = 'mdi-palette-swatch';
 const mdiShareVariant = 'mdi-share-variant';
 const mdiTranslate = 'mdi-translate';
-const mdiDevices = 'mdi-devices';
-const mdiLogout = 'mdi-logout';
-const mdiLogoutVariant = 'mdi-logout-variant';
 
 const app = useAppStore();
 const ws = useWebSocketStore();
@@ -91,34 +87,7 @@ const pickColorDialog = ref(false);
 const settingsDialog = ref(false);
 // 分享记录：这个房间最近分享过什么、被打开了几次（服务端只有签发时才留记录）
 const shareHistoryDialog = ref(false);
-// 登录设备管理：此刻有谁登着、能不能把某一台踢下去（七天免密的反制手段）
-const sessionManagerDialog = ref(false);
-const sessionBusy = ref('');
 const pageQrDialogVisible = ref(false);
-
-// 退出登录。
-//
-// ⚠️ 一定要打到服务端 —— 只清本地是「眼不见为净」：服务端那份会话还活着，
-// 拿到过令牌的人照样能用七天。服务端吊销之后令牌立刻失效，连已建立的 WebSocket 也会被掐断。
-// all=true 是把**其它设备**一起踢下线（需要当前是平台级会话，否则服务端会拒绝）。
-async function handleLogout({ all = false } = {}) {
-    if (sessionBusy.value) {
-        return;
-    }
-    sessionBusy.value = all ? 'all' : 'self';
-    try {
-        await ws.logout({ all });
-        settingsDialog.value = false;
-        if (all) {
-            toast(t('logoutAllDone'), { color: 'success' });
-        }
-    } catch (err) {
-        console.error('登出失败:', err);
-        toast(t('logoutFailed'), { color: 'error' });
-    } finally {
-        sessionBusy.value = '';
-    }
-}
 // 设置面板的页签：通用 / 个性化。个性化里是「每个界面模式一组显示开关」，
 // 开关会长到几十项，所以必须单独占一页，不能平铺在通用页里。
 const settingsTab = ref('general');
@@ -527,12 +496,7 @@ const roomManagePassword = ref('');
 // 「我算不算管理员」在前端只能粗略推断：手上有平台令牌就是。
 // 服务端才是权威（每个管理接口都会重判一次），这里只用来决定
 // 「清理无用房间」这个按钮要不要显示。
-// isPlatformAdmin 这次登录的是不是「平台级」凭据（绿色通道：所有房间 + 房间管理）。
-//
-// ⚠️ 判定要用 hasGlobalSession()，**不是** getGlobalAuthToken()：
-// 浏览器现在默认走 HttpOnly Cookie，前端手上根本没有令牌。用「有没有令牌」来判的话，
-// Cookie 模式下的管理员能力会全部**静默失效** —— 界面上看不出任何异常，只是点了没反应。
-const isPlatformAdmin = computed(() => !app.globalAuth || Boolean(ws.hasGlobalSession && ws.hasGlobalSession()));
+const isPlatformAdmin = computed(() => !app.globalAuth || Boolean(ws.getGlobalAuthToken && ws.getGlobalAuthToken()));
 
 // 「按名称进入」：侧栏动作行与工具栏那个门图标都走这里。
 // 侧栏还开着时要顺手收起它 —— 否则弹窗会被侧栏压住（移动端是 bottom sheet，直接叠在一起）。
@@ -789,7 +753,6 @@ watch(() => route.fullPath, () => {
                 </div>
                 <h1 class="auth-gate__title">{{ t('platformLockedTitle') }}</h1>
                 <p class="auth-gate__desc">{{ t('platformLockedDesc') }}</p>
-                <p class="auth-gate__hint">{{ t('platformLockedSessionHint') }}</p>
                 <v-text-field
                     v-model="platformPassword"
                     :label="t('password')"
@@ -918,7 +881,6 @@ watch(() => route.fullPath, () => {
                 <v-tabs v-model="settingsTab" density="comfortable" color="primary" class="cc-settings__tabs">
                     <v-tab value="general">{{ t('settingsGeneral') }}</v-tab>
                     <v-tab value="personalization">{{ t('personalization') }}</v-tab>
-                    <v-tab value="security">{{ t('settingsSecurity') }}</v-tab>
                 </v-tabs>
                 <v-tabs-window v-model="settingsTab">
                     <v-tabs-window-item value="general">
@@ -1191,47 +1153,6 @@ watch(() => route.fullPath, () => {
 
                         </v-card-text>
                     </v-tabs-window-item>
-                    <v-tabs-window-item value="security">
-                        <v-card-text class="cc-settings__body" style="max-height: 62vh; overflow-y: auto;">
-                            <div class="text-caption text-medium-emphasis mb-3">{{ t('settingsSecurityHint') }}</div>
-
-                            <v-list class="cc-settings__list" density="comfortable">
-                                <v-list-item class="cc-settings__item" @click="sessionManagerDialog = true">
-                                    <template v-slot:prepend>
-                                        <v-icon color="primary">{{ mdiDevices }}</v-icon>
-                                    </template>
-                                    <v-list-item-title>{{ t('sessionManagerEntry') }}</v-list-item-title>
-                                    <v-list-item-subtitle>{{ t('sessionManagerEntryHint') }}</v-list-item-subtitle>
-                                    <template v-slot:append>
-                                        <v-icon size="18">{{ mdiChevronRight }}</v-icon>
-                                    </template>
-                                </v-list-item>
-                            </v-list>
-
-                            <div class="cc-settings__security-actions mt-3">
-                                <v-btn
-                                    variant="tonal"
-                                    color="error"
-                                    :prepend-icon="mdiLogout"
-                                    :loading="sessionBusy === 'self'"
-                                    @click="handleLogout({ all: false })"
-                                >
-                                    {{ t('logoutDevice') }}
-                                </v-btn>
-                                <v-btn
-                                    v-if="isPlatformAdmin"
-                                    variant="text"
-                                    color="error"
-                                    :prepend-icon="mdiLogoutVariant"
-                                    :loading="sessionBusy === 'all'"
-                                    @click="handleLogout({ all: true })"
-                                >
-                                    {{ t('logoutAllDevices') }}
-                                </v-btn>
-                            </div>
-                            <div class="text-caption text-medium-emphasis mt-2">{{ t('logoutHint') }}</div>
-                        </v-card-text>
-                    </v-tabs-window-item>
                 </v-tabs-window>
             </v-card>
         </v-dialog>
@@ -1239,9 +1160,6 @@ watch(() => route.fullPath, () => {
 
         <!-- 分享记录（从设置 → 分享记录 打开）。与设置弹窗并列，都是顶层 teleport 弹窗。 -->
         <share-history-dialog v-model="shareHistoryDialog"></share-history-dialog>
-
-        <!-- 登录设备管理（设置 → 安全）。令牌能用七天，就得配一把随时能收回来的东西。 -->
-        <session-manager-dialog v-model="sessionManagerDialog"></session-manager-dialog>
 
         <traditional-color-dialog v-model="colorDialog"></traditional-color-dialog>
 
@@ -1702,21 +1620,6 @@ watch(() => route.fullPath, () => {
     line-height: 1.6;
     margin-bottom: 20px;
     color: var(--cc-text-muted, currentColor);
-}
-
-/* 「验证一次管七天」要当面说出来 —— 不知道这件事的人会以为自己在给一台公共电脑上锁 */
-.auth-gate__hint {
-    font-size: 0.75rem;
-    line-height: 1.5;
-    margin: -12px 0 18px;
-    color: var(--cc-text-muted, currentColor);
-    opacity: 0.75;
-}
-
-.cc-settings__security-actions {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 8px;
 }
 
 .auth-gate__field {

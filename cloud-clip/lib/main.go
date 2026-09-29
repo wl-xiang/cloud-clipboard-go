@@ -119,9 +119,6 @@ func NewClipboardServer(cfg *Config) (*ClipboardServer, error) {
 		cfg.Server.Auth = "" // 确保在未配置或配置为false时为空字符串
 	}
 	cfg.Server.RoomAuth = normalizeRoomAuthConfig(cfg.Server.RoomAuth)
-	// 会话有效期：配置文件 / 环境变量里写错的值在这里一次性夹回合法区间并写回配置对象，
-	// 之后签发、续签、界面展示读到的都是同一个数字（详见 normalizeSessionConfig 的注释）。
-	normalizeSessionConfig(cfg, logger)
 
 	s := &ClipboardServer{
 		config:          cfg,
@@ -137,12 +134,9 @@ func NewClipboardServer(cfg *Config) (*ClipboardServer, error) {
 		connDeviceIDMap: make(map[*websocket.Conn]string),
 		deviceHashSeed:  murmur3.Sum32(random_bytes(32)) & 0xffffffff, // 在此处初始化种子
 
-	// 初始化房间管理相关字段
-	roomStats:      make(map[string]*RoomStat),
-	roomStatsMutex: sync.RWMutex{},
-
-		// WebSocket 连接 -> 握手时使用的会话 id（登出掐连接要用，见 auth_session.go）
-		connSessionMap: make(map[*websocket.Conn]string),
+		// 初始化房间管理相关字段
+		roomStats:      make(map[string]*RoomStat),
+		roomStatsMutex: sync.RWMutex{},
 
 		// 局域网延迟统计
 		latency: newLatencyTracker(30),
@@ -163,14 +157,6 @@ func NewClipboardServer(cfg *Config) (*ClipboardServer, error) {
 	if cfg.Server.RoomList {
 		s.startRoomCleanup()
 	}
-
-	// 登录会话表。加载失败不致命：最坏情况是「所有人得重新输一次密码」
-	// （会话没了 = 没有账可查 = 令牌一律不认），比直接起不来容易恢复。
-	s.sessionStore = newSessionStore(s.sessionStorePath(), s.logger)
-	if err := s.sessionStore.load(); err != nil {
-		s.logger.Printf("警告: 加载登录会话表失败: %v。将按空表启动。", err)
-	}
-	s.startSessionMaintenance()
 
 	return s, nil
 }
@@ -397,9 +383,6 @@ func (s *ClipboardServer) setupRoutes() {
 	mux.HandleFunc(prefix+"/myip", s.corsMiddleware(s.handle_myip))
 	mux.HandleFunc(prefix+"/auth/token", s.corsMiddleware(s.handleAuthToken))
 	mux.HandleFunc(prefix+"/auth/token/refresh", s.corsMiddleware(s.handleAuthTokenRefresh))
-	// 登出 / 登录设备管理：让七天会话可以被立刻吊销、也可以只踢掉某台设备。
-	mux.HandleFunc(prefix+"/auth/logout", s.corsMiddleware(s.handleAuthLogout))
-	mux.HandleFunc(prefix+"/auth/sessions", s.corsMiddleware(s.handleAuthSessions))
 	mux.HandleFunc(prefix+"/push", s.handle_push)
 	mux.HandleFunc(prefix+"/rooms", s.corsMiddleware(s.handleRooms))
 	// /rooms/cleanup 必须**注册在 /rooms/ 之前**可读性才不乱，但 ServeMux 按最长前缀匹配，
@@ -572,8 +555,6 @@ func (s *ClipboardServer) Stop() error {
 	}
 	// 停止房间清理任务
 	s.stopRoomCleanup()
-	// 会话巡检要停，并且停之前先把最后一批「最后活跃时间」落盘
-	s.stopSessionMaintenance()
 	s.logger.Println("正在停止服务器...")
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -726,7 +707,6 @@ func (s *ClipboardServer) cleanupWebSocketConnection(conn *websocket.Conn, devic
 	delete(s.websockets, conn)
 	delete(s.room_ws, conn)
 	delete(s.connDeviceIDMap, conn)
-	delete(s.connSessionMap, conn)
 
 	if deviceID != "" {
 		delete(s.deviceConnected, deviceID)

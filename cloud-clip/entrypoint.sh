@@ -116,9 +116,7 @@ cat>"${CONFIG_FILE}"<<EOF
         "storageDir": "/app/server-node/data/",
         "roomList": ${ROOM_LIST:-true},
         "roomCleanup": 3600,
-        "roomManagePassword": "${ROOM_MANAGE_PASSWORD:-newroom123}",
-        "sessionTTL": $(( ${SESSION_TTL_HOURS:-168} * 3600 )),
-        "sessionLifetime": $(( ${SESSION_LIFETIME_HOURS:-720} * 3600 ))
+        "roomManagePassword": "${ROOM_MANAGE_PASSWORD:-newroom123}"
     },
     "text": {
         "limit": ${TEXT_LIMIT:-9000}

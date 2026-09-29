@@ -31,16 +31,7 @@ type Config struct {
 		// RoomManagePassword 房间管理密码（新建 / 删除 / 清理房间都要它）。
 		// 与 server.auth 是**两把不同的钥匙**：auth 进平台，这把管房间 ——
 		// 把平台密码给全家共用时，房间管理这把钥匙仍然只在管理员手里。
-		RoomManagePassword string         `json:"roomManagePassword"`
-
-		// SessionTTL 登录会话的**滑动有效期**（秒）：验证一次密码之后，这么久之内不必再输。
-		// 默认 7 天（Docker 侧由 SESSION_TTL_HOURS 覆盖）。合法区间 5 分钟 ~ 30 天。
-		SessionTTL int `json:"sessionTTL"`
-		// SessionLifetime 会话族的**绝对生存期**（秒）：从第一次输密码那刻算起，
-		// 到点必须重新认证 —— 无论中间续签过多少次。
-		// 这条是「偷到一枚令牌就能无限续签」的解药，默认 30 天（SESSION_LIFETIME_HOURS）。
-		// ⚠️ 它必须 ≥ SessionTTL，否则还没到滑动期限就被判过期，配了等于没配（代码会夹紧）。
-		SessionLifetime int `json:"sessionLifetime"`
+		RoomManagePassword string `json:"roomManagePassword"`
 	} `json:"server"`
 	Text struct {
 		Limit int `json:"limit"` //done
@@ -114,9 +105,6 @@ func defaultConfig() *Config {
 			RoomCleanup int            `json:"roomCleanup"`
 			// 房间管理密码：新建 / 删除 / 清理房间都要它（与 server.auth 两把钥匙）。
 			RoomManagePassword string `json:"roomManagePassword"`
-			// 登录会话：7 天内免密（滑动），30 天后必须重新输一次密码（绝对）。
-			SessionTTL      int `json:"sessionTTL"`
-			SessionLifetime int `json:"sessionLifetime"`
 		}{
 			Host:        []string{"0.0.0.0"},
 			Port:        9501,
@@ -134,12 +122,6 @@ func defaultConfig() *Config {
 			// 默认 newroom123：房间管理（新建/删除/清理）必须出示这把钥匙，
 			// 否则任何能进平台的人都能随手建房间、删掉别人的房间。
 			RoomManagePassword: "newroom123",
-			// 7 天：一次验证，七天内不必再输密码（家庭 / 自用场景最常见的诉求）。
-			// 之所以敢给这么长，是因为它是**可吊销**的：服务端记账（见 auth_session.go），
-			// 登出 / 踢设备立即生效；同时也带着 30 天的绝对上限。
-			SessionTTL: defaultSessionTTLSeconds,
-			// 30 天：不管续签多少次，一个月总要认一次 「你还是你」。
-			SessionLifetime: defaultSessionLifetimeSecs,
 		},
 		Text: struct {
 			Limit int `json:"limit"`
@@ -158,38 +140,6 @@ func defaultConfig() *Config {
 			Chunk:  1 * _MB,
 			Limit:  1024 * _MB, // 默认单文件上限 1GB（Docker 侧由 FILE_LIMIT 覆盖）
 		},
-	}
-}
-
-// normalizeSessionConfig 把会话的两个有效期钳到合法区间（见 Server.SessionTTL 的注释）。
-//
-// 为什么要单独归一一次，而不是等读取时再钳：这类设置写到 json 里、应到环境变量上，
-// 错值会被一个人抄给另一个人。启动时就把**实际生效的值**写回配置对象，
-// 后续所有读取点（签发、续签、会话列表）看到的都是同一个数字，不会再各自解释一遍。
-func normalizeSessionConfig(cfg *Config, logger *log.Logger) {
-	if cfg == nil {
-		return
-	}
-	ttl := cfg.Server.SessionTTL
-	if ttl <= 0 {
-		ttl = defaultSessionTTLSeconds
-	}
-	ttl = clampInt(ttl, minSessionTTLSeconds, maxSessionTTLSeconds)
-
-	lifetime := cfg.Server.SessionLifetime
-	if lifetime <= 0 {
-		lifetime = defaultSessionLifetimeSecs
-	}
-	lifetime = clampInt(lifetime, minSessionLifetimeSecs, maxSessionLifetimeSecs)
-	if lifetime < ttl {
-		lifetime = ttl
-	}
-
-	cfg.Server.SessionTTL = ttl
-	cfg.Server.SessionLifetime = lifetime
-	if logger != nil {
-		logger.Printf("登录会话: 滑动有效期 %d 秒（%.1f 天），绝对生存期 %d 秒（%.1f 天）",
-			ttl, float64(ttl)/86400, lifetime, float64(lifetime)/86400)
 	}
 }
 

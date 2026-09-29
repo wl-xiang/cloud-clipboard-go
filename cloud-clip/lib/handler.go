@@ -3,7 +3,6 @@ package lib
 import (
 	"encoding/binary"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"mime"
@@ -21,19 +20,9 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-// handleAuthToken POST /auth/token —— 用密码换一枚**会话令牌**。
-//
-// 令牌的默认寿命是 **7 天**（server.sessionTTL）：验证一次密码，七天内不必再输。
-// 这不是把密码换成一张永久通行证 —— 三个上限同时生效，见 auth_session.go 文件头：
-//   1. 滑动有效期 7 天（到期自动结束，正常使用会自动续期）；
-//   2. 绝对生存期 30 天（server.sessionLifetime，到点必须重新输密码）；
-//   3. 服务端随时可以吊销（/auth/logout），吊销立即生效。
-//
-// delivery 决定令牌怎么交到客户端手上：
-//   - `token`（默认）：写在响应体里，给 curl / 快捷指令 / Android 这类客户端自己保管；
-//   - `cookie`：写进 HttpOnly Cookie（浏览器自动携带，JS 读不到 —— 详见 auth_session.go）。
-//
-// Cookie 模式下响应体里**不会**回令牌：浏览器不需要它，回了反而给它多一条泄出去的路。
+// roomSessionTTLSeconds 房间会话令牌的有效期，默认 1 小时。
+const roomSessionTTLSeconds = 60 * 60
+
 func (s *ClipboardServer) handleAuthToken(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "Only POST is allowed", "仅允许 POST 请求")
@@ -47,12 +36,8 @@ func (s *ClipboardServer) handleAuthToken(w http.ResponseWriter, r *http.Request
 
 	var req struct {
 		Password string `json:"password"`
-		Delivery string `json:"delivery"`
 	}
-	// 空 body 是可接受的（少量客户端不写 Content-Type 也不带 body）：
-	// 那样只是「没给密码」，该报 401 password_required，而不是 400 ——
-	// 后者会让人以为是报文格式写错了，对着 JSON _schema 查半天。
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && err.Error() != "EOF" {
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_request_body", "Invalid request body", "无效的请求体")
 		return
 	}
@@ -63,23 +48,10 @@ func (s *ClipboardServer) handleAuthToken(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	// 令牌现在能用七天，「一次猜中就管用七天」—— 所以猜密码必须变成慢活儿。
-	clientIP := get_remote_ip(r)
-	throttleKey := clientIP + "|" + room
-	if remaining := s.loginLockedRemaining(throttleKey); remaining > 0 {
-		w.Header().Set("Retry-After", strconv.FormatInt(remaining, 10))
-		writeError(w, http.StatusTooManyRequests, "too_many_attempts",
-			"Too many failed attempts, please retry later",
-			fmt.Sprintf("密码错误次数过多，请 %d 秒后再试", remaining))
-		return
-	}
-
 	if !s.tokenMatchesRoom(room, password) {
-		s.recordLoginFailure(throttleKey)
 		writeError(w, http.StatusUnauthorized, "wrong_password", "Wrong password", "密码不正确")
 		return
 	}
-	s.clearLoginFailures(throttleKey)
 
 	// 使用全局密码登录时，签发对所有房间有效的全局会话令牌
 	scope := ""
@@ -87,53 +59,23 @@ func (s *ClipboardServer) handleAuthToken(w http.ResponseWriter, r *http.Request
 		scope = "global"
 	}
 
-	issued, err := s.openSession(room, sessionSeed{
-		Scope:     scope,
-		Via:       "password",
-		UserAgent: r.Header.Get("User-Agent"),
-		IP:        clientIP,
-	})
+	token, err := s.issueRoomSessionToken(room, roomSessionTTLSeconds, scope)
 	if err != nil {
-		s.logger.Printf("错误: 签发会话令牌失败: %v", err)
+		s.logger.Printf("错误: 签发房间会话令牌失败: %v", err)
 		writeError(w, http.StatusInternalServerError, "token_issue_failed", "Failed to issue token", "令牌签发失败")
 		return
 	}
 
-	if s.wantsCookieDelivery(r, req.Delivery) {
-		s.writeSessionCookie(w, r, issued.Token, cookieMaxAge(issued.ExpiresAt))
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]interface{}{
-			"token":            "",
-			"delivery":         deliveryCookie,
-			"expiresAt":        issued.ExpiresAt,
-			"absoluteExpiresAt": issued.AbsoluteExp,
-			"scope":            issued.Scope,
-			"room":             issued.Room,
-			"sessionId":        issued.SessionID,
-		})
-		return
-	}
-
 	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"token":            issued.Token,
-		"delivery":         deliveryToken,
-		"expiresAt":        issued.ExpiresAt,
-		"absoluteExpiresAt": issued.AbsoluteExp,
-		"scope":            issued.Scope,
-		"room":             issued.Room,
-		"sessionId":        issued.SessionID,
+		"token":     token,
+		"expiresAt": time.Now().Unix() + roomSessionTTLSeconds,
+		"scope":     scope,
 	})
 }
 
-// handleAuthTokenRefresh POST /auth/token/refresh —— 拿还有效的会话令牌换一枚新的。
-//
-// ⚠️ **轮换**：新令牌签发的同时，旧令牌当场作废（留 2 分钟宽限给在飞的请求）。
-// 这样一旦有人复制了令牌，正版持有人下一次续签就会让那份复制件当场失灵 ——
-// 而如果反过来，旧令牌还能继续用，那双方可以同时在线，谁都发现不了。
-//
-// 续签不会让会话变成永久的：整个家族的寿命从**第一次输密码**那刻算起
-// （server.sessionLifetime，默认 30 天），到点这里会直接拒绝，要求重新认证。
+// handleAuthTokenRefresh 使用仍有效的会话令牌签发新令牌，无需密码即可静默续期。
 func (s *ClipboardServer) handleAuthTokenRefresh(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "Only POST is allowed", "仅允许 POST 请求")
@@ -145,292 +87,27 @@ func (s *ClipboardServer) handleAuthTokenRefresh(w http.ResponseWriter, r *http.
 		room = "default"
 	}
 
-	claims, valid := s.callerSessionClaims(r, room)
-	if !valid {
+	token := extractAuthToken(r)
+	claims, ok := s.parseRoomSessionToken(token)
+	if !ok || !s.validateRoomSessionToken(room, token) {
 		writeError(w, http.StatusUnauthorized, "session_token_invalid", "Session token invalid or expired", "会话令牌无效或已过期")
 		return
 	}
-	// 没有 sid 的旧令牌是改造前签出来的无名户 —— 服务端没有它的账，
-	// 吊销不了也轮换不了，让它自然到期就好，不给它延长寿命的机会。
-	if claims.Sid == "" {
-		writeError(w, http.StatusUnauthorized, "reauth_required", "Please sign in again", "请重新输入密码")
-		return
-	}
 
-	var req struct {
-		Delivery string `json:"delivery"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && err.Error() != "EOF" {
-		writeError(w, http.StatusBadRequest, "invalid_request_body", "Invalid request body", "无效的请求体")
-		return
-	}
-
-	parent := s.sessionRecord(claims.Sid)
-	issued, err := s.openSession(room, sessionSeed{
-		FamilyID:     claims.Fam,
-		FamilyStart:  claims.Crt,
-		ParentID:     claims.Sid,
-		RefreshCount: increment(parent),
-		Scope:        claims.Scope,
-		Via:          "refresh",
-		UserAgent:    r.Header.Get("User-Agent"),
-		IP:           get_remote_ip(r),
-	})
-	if errors.Is(err, errSessionLifetimeExceeded) {
-		writeError(w, http.StatusUnauthorized, "reauth_required",
-			"Session has reached its maximum lifetime, please sign in again",
-			"登录已超过最长有效期，请重新输入密码")
-		return
-	}
+	// 续签时保留原令牌的 scope，避免全局会话降级为房间专属
+	newToken, err := s.issueRoomSessionToken(room, roomSessionTTLSeconds, claims.Scope)
 	if err != nil {
-		s.logger.Printf("错误: 续签会话令牌失败: %v", err)
+		s.logger.Printf("错误: 续签房间会话令牌失败: %v", err)
 		writeError(w, http.StatusInternalServerError, "token_refresh_failed", "Failed to refresh token", "令牌续签失败")
 		return
 	}
 
-	if s.wantsCookieDelivery(r, req.Delivery) {
-		s.writeSessionCookie(w, r, issued.Token, cookieMaxAge(issued.ExpiresAt))
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]interface{}{
-			"token":            "",
-			"delivery":         deliveryCookie,
-			"expiresAt":        issued.ExpiresAt,
-			"absoluteExpiresAt": issued.AbsoluteExp,
-			"scope":            issued.Scope,
-			"sessionId":        issued.SessionID,
-		})
-		return
-	}
-
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"token":            issued.Token,
-		"delivery":         deliveryToken,
-		"expiresAt":        issued.ExpiresAt,
-		"absoluteExpiresAt": issued.AbsoluteExp,
-		"scope":            issued.Scope,
-		"sessionId":        issued.SessionID,
+		"token":     newToken,
+		"expiresAt": time.Now().Unix() + roomSessionTTLSeconds,
+		"scope":     claims.Scope,
 	})
-}
-
-// handleAuthLogout POST /auth/logout —— 让凭据**立刻**失效。
-//
-// 「立刻」是这里的全部重点：前端删掉本地那份只是看不见，服务端这份还活着，
-// 任何拿着副本的人（比如剪贴板里那串旧令牌）照样能用。所以登出必须打到服务端：
-// 会话表里把它记成已吊销，validateRoomSessionToken 下一次就会拒绝它，
-// 并且对应的 WebSocket 连接会被直接掐断（见 closeWebSocketSessions）。
-//
-// body: {"all": true} 表示「把所有设备都踢下线」（连同一台机器上同一家族的轮换令牌）。
-// 没给 all 就只吊销当前这些令牌所属的会话家族。
-func (s *ClipboardServer) handleAuthLogout(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "Only POST is allowed", "仅允许 POST 请求")
-		return
-	}
-
-	var req struct {
-		All bool `json:"all"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && err.Error() != "EOF" {
-		writeError(w, http.StatusBadRequest, "invalid_request_body", "Invalid request body", "无效的请求体")
-		return
-	}
-
-	// Cookie 无论这次请求认不认账都要清掉 —— 用户点了退出，浏览器就不该再带着它。
-	clearSessionCookie(w, r)
-
-	callers := s.callerSessionClaimsList(r)
-	revoked := 0
-	purgeAll := false
-	for _, claims := range callers {
-		if strings.TrimSpace(claims.Scope) == "global" {
-			purgeAll = true
-		}
-	}
-
-	if purgeAll && req.All {
-		revoked = s.revokeAllSessions("logout_all")
-	} else {
-		seen := map[string]bool{}
-		for _, claims := range callers {
-			if claims.Fam == "" || seen[claims.Fam] {
-				continue
-			}
-			seen[claims.Fam] = true
-			revoked += s.revokeSessionFamily(claims.Fam, "logout")
-		}
-		// 无名令牌（没有 sid）吊销不了：它压根没有服务端记录。
-		// 这时至少 Cookie 已经清了，浏览器这条通道就此断掉。
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{
-		"revoked": revoked,
-		"all":     purgeAll && req.All,
-	})
-}
-
-// handleAuthSessions GET/DELETE /auth/sessions —— 登录设备管理。
-//
-// 这是「令牌被盗」之后用户唯一能自救的手段：看看现在都有谁在线，把不认识的踢掉。
-// 可见范围有一条硬边界 —— 平台级会话（scope=global）看到全部；普通房间会话只能看到
-// 自己这一族（同一个会话家族 = 同一个浏览器 / 同一次登录），看不到别人的登录。
-func (s *ClipboardServer) handleAuthSessions(w http.ResponseWriter, r *http.Request) {
-	callers := s.callerSessionClaimsList(r)
-	if len(callers) == 0 {
-		writeError(w, http.StatusUnauthorized, "session_token_invalid", "Session token invalid or expired", "会话令牌无效或已过期")
-		return
-	}
-
-	if r.Method != http.MethodGet && r.Method != http.MethodDelete {
-		writeError(w, http.StatusMethodNotAllowed, "method_not_allowed", "Only GET/DELETE is allowed", "仅允许 GET/DELETE 请求")
-		return
-	}
-
-	globalView := false
-	currentIDs := map[string]bool{}
-	for _, claims := range callers {
-		if strings.TrimSpace(claims.Scope) == "global" {
-			globalView = true
-		}
-		if claims.Sid != "" {
-			currentIDs[claims.Sid] = true
-		}
-		if claims.Fam != "" {
-			currentIDs[claims.Fam] = true
-		}
-	}
-
-	if r.Method == http.MethodGet {
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]interface{}{
-			"sessions": s.listSessionViews(currentIDs, globalView),
-			"ttl":      s.sessionTTLSeconds(),
-			"lifetime": s.sessionLifetimeSeconds(),
-		})
-		return
-	}
-
-	targetID := strings.TrimSpace(r.URL.Query().Get("sid"))
-	if targetID == "" {
-		targetID = strings.TrimSpace(r.URL.Query().Get("id"))
-	}
-	if targetID == "" {
-		writeError(w, http.StatusBadRequest, "missing_session_id", "Missing session id", "缺少会话 ID")
-		return
-	}
-	if targetID == "all" {
-		if !globalView {
-			writeError(w, http.StatusForbidden, "forbidden", "Only platform admins can sign out every device", "只有平台管理员可以登出全部设备")
-			return
-		}
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(map[string]interface{}{"revoked": s.revokeAllSessions("session_manage_all")})
-		return
-	}
-
-	target := s.sessionRecord(targetID)
-	if target == nil {
-		writeError(w, http.StatusNotFound, "session_not_found", "Session not found", "会话不存在或已失效")
-		return
-	}
-	if target.FamilyID == targetID || currentIDs[target.FamilyID] || globalView {
-		if s.revokeSessionByID(targetID, "session_manage") {
-			s.closeWebSocketSessions([]string{targetID})
-			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(map[string]interface{}{"revoked": 1})
-			return
-		}
-	}
-	writeError(w, http.StatusForbidden, "forbidden", "No permission to revoke this session", "无权吊销该会话")
-}
-
-// callerSessionClaims 找出这次请求里针对目标房间的那枚会话令牌（只看还作数的）。
-func (s *ClipboardServer) callerSessionClaims(r *http.Request, room string) (*shareClaims, bool) {
-	claims, _, ok := s.callerSessionClaimsFor(r, room)
-	return claims, ok
-}
-
-func (s *ClipboardServer) callerSessionClaimsFor(r *http.Request, room string) (*shareClaims, string, bool) {
-	var fallback *shareClaims
-	var fallbackToken string
-	for _, token := range extractAuthTokens(r) {
-		claims, ok := s.parseRoomSessionToken(token)
-		if !ok {
-			continue
-		}
-		// 全局令牌对任何房间都成立；房间令牌必须门当户对
-		if strings.TrimSpace(claims.Scope) != "global" && normalizeRoomName(claims.Room) != normalizeRoomName(room) {
-			continue
-		}
-		if fallback == nil {
-			fallback, fallbackToken = claims, token
-		}
-		if s.sessionClaimsActive(claims) {
-			return claims, token, true
-		}
-	}
-	if fallback != nil {
-		return fallback, fallbackToken, false
-	}
-	return nil, "", false
-}
-
-// callerSessionClaimsList 列出这次请求里所有「看着像会话令牌」的 claims（含已失效的族信息）。
-// 登出要认它 —— 用户点了退出，就算令牌刚好过期了，族该吊销的还是得吊销。
-func (s *ClipboardServer) callerSessionClaimsList(r *http.Request) []*shareClaims {
-	list := make([]*shareClaims, 0, 2)
-	seen := map[string]bool{}
-	for _, token := range extractAuthTokens(r) {
-		claims, ok := s.parseRoomSessionToken(token)
-		if !ok {
-			continue
-		}
-		if claims.Sid != "" && seen[claims.Sid] {
-			continue
-		}
-		if claims.Sid != "" {
-			seen[claims.Sid] = true
-		}
-		list = append(list, claims)
-	}
-	return list
-}
-
-// wantsCookieDelivery 这次要不要用 Cookie 交付令牌。
-// query 优先级高于 body：调试时用 `curl '…/auth/token?delivery=cookie'` 就能验证这条通道。
-func (s *ClipboardServer) wantsCookieDelivery(r *http.Request, bodyDelivery string) bool {
-	if r == nil {
-		return false
-	}
-	candidates := []string{strings.TrimSpace(strings.ToLower(r.URL.Query().Get("delivery"))), strings.TrimSpace(strings.ToLower(bodyDelivery))}
-	for _, value := range candidates {
-		switch value {
-		case deliveryCookie:
-			return true
-		case deliveryToken:
-			return false
-		}
-	}
-	return false // 默认是 token：非浏览器客户端不受影响
-}
-
-func cookieMaxAge(expiresAt int64) int {
-	remaining := expiresAt - time.Now().Unix()
-	if remaining <= 0 {
-		return 0
-	}
-	if remaining > maxSessionTTLSeconds {
-		return maxSessionTTLSeconds
-	}
-	return int(remaining)
-}
-
-func increment(rec *authSession) int {
-	if rec == nil {
-		return 1
-	}
-	return rec.RefreshCount + 1
 }
 
 func (s *ClipboardServer) handle_myip(w http.ResponseWriter, r *http.Request) {
@@ -499,7 +176,6 @@ func (s *ClipboardServer) handle_push(w http.ResponseWriter, r *http.Request) {
 
 	requirement := s.resolveRoomAuth(room)
 	authNeeded := requirement.Required
-	sessionID := ""
 	if authNeeded {
 		token := extractWebSocketToken(r)
 		if token == "" {
@@ -512,9 +188,6 @@ func (s *ClipboardServer) handle_push(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusUnauthorized, "unauthorized_invalid_token", "Invalid auth token", "Unauthorized: Invalid token")
 			return
 		}
-		// 握手是这条连接唯一一次查凭据的机会 —— 记下它用的是哪条会话，
-		// 「退出登录 / 踢掉这台设备」才知道该掐断谁（见 closeWebSocketSessions）。
-		sessionID = s.sessionIDForRequest(r, room, token)
 		s.logger.Printf("WebSocket 认证成功。来自 IP: %s, 房间: %s", ip, room)
 	}
 
@@ -552,9 +225,6 @@ func (s *ClipboardServer) handle_push(w http.ResponseWriter, r *http.Request) {
 	s.room_ws[conn] = room
 	s.deviceConnected[deviceID] = deviceMeta
 	s.connDeviceIDMap[conn] = deviceID
-	if sessionID != "" {
-		s.connSessionMap[conn] = sessionID
-	}
 	s.updateRoomDeviceCount(room, deviceID, true)
 
 	s.logger.Printf("新 WebSocket 客户端连接: %s (ID: %s), 房间: %s. 当前连接数: %d, 设备数: %d",

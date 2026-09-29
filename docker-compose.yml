@@ -27,8 +27,6 @@ services:
             MANUAL_CERT_PATH: ${MANUAL_CERT_PATH:-} #手动设置证书路径,默认为空,该参数优先级高于MKCERT_DOMAIN_OR_IP
             ROOM_LIST: ${ROOM_LIST:-} #是否启用房间列表/房间管理功能,默认true
             ROOM_MANAGE_PASSWORD: ${ROOM_MANAGE_PASSWORD:-} #房间管理密码(新建/删除/清理房间都要),默认newroom123
-            SESSION_TTL_HOURS: ${SESSION_TTL_HOURS:-} #登录会话有效期(小时),默认168(7天): 登录后七天内不必再输密码
-            SESSION_LIFETIME_HOURS: ${SESSION_LIFETIME_HOURS:-} #登录会话绝对生存期(小时),默认720(30天): 到点必须重新输密码
         volumes:
             # 数据卷（历史记录 / 上传的文件 / mkcert 自签证书）。
             # 默认用具名卷：开箱即用，不必先建目录；位置用
